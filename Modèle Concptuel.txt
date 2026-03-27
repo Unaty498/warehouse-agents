@@ -1,0 +1,50 @@
+Modèle Conceptuel
+1. Agent
+Perception : Les agents perçoivent les obstacles mobiles (tels que les humains), les autres AMR afin d'éviter les collisions, la présence des palettes (bien que cette information soit actualisée en continu grâce aux communications, ainsi que l'occupation des zones de recharge).
+
+
+Connaissances : Chaque robot connaît son niveau de batterie actuel, la position des obstacles immobiles, les points d'entrée et de sortie, les zones intermédiaires et les stations de recharge. Il a également connaissance du nombre de palettes disponibles à chaque point d'entrée et dans les zones intermédiaires, ainsi que de la capacité maximale de ces dernières.
+
+
+Processus de décision : Le comportement d'un AMR est régi par les règles de priorité suivantes :
+
+Si le robot ne transporte aucune palette et possède suffisamment de batterie pour effectuer le trajet complet (point d'entrée, point de sortie, puis station de recharge), il se dirige vers le point d'entrée pour charger une palette et la dépose au point de sortie.
+
+
+S'il n'a pas de palette et a l'autonomie nécessaire pour un trajet initial (point d'entrée, zone intermédiaire, puis station de recharge), et que la zone intermédiaire n'est pas pleine (ou qu'un autre robot prévoit d'y récupérer une palette sans conflit temporel, dans l'éventualité d'un système de réservation intelligent), il charge une palette à l'entrée et la dépose dans la zone intermédiaire.
+
+
+S'il n'a pas de palette et a l'autonomie pour un trajet final (zone intermédiaire, point de sortie, puis station de recharge), et que la zone intermédiaire n'est pas vide (ou qu'un robot prévoit d'y déposer une palette sans conflit temporel), il récupère une palette dans la zone intermédiaire et la dépose au point de sortie.
+
+
+Dans tous les autres cas, il se dirige vers la station de rechargement.
+
+
+Modèle d'action : Les états possibles du robot incluent l'attente/recherche de décision, le déplacement vers une prise en charge d’une palette, le transport d'une palette, le déplacement vers le rechargement, et la recharge. Les manœuvres d'évitement sont intrinsèquement intégrées aux phases de déplacement.
+
+
+2. Environnement
+L'environnement est modélisé sous la forme d'une grille 2D contenant les obstacles et les différentes zones.
+
+
+Afin de respecter les contraintes spatiales, deux robots (ou un robot et un humain) ne peuvent pas occuper la même case simultanément. De plus, l'environnement impose le respect strict de la capacité maximale des zones de recharge et des zones intermédiaires.
+
+
+La communication s'effectue par messages de pair à pair ou par diffusion (broadcast), sans limite de portée temporelle ou spatiale, ce qui simule de manière réaliste un entrepôt moderne équipé du Wi-Fi.
+
+
+
+3. Interactions
+Le développement s'appuiera dans un premier temps sur un fonctionnement de réservation naïf : après avoir pris une décision, le robot diffuse un message pour réserver une palette, une zone ou une station de recharge. Cela permet aux autres robots d'intégrer ces contraintes dans leur propre processus de décision.
+
+
+En cas de blocage physique mutuel, les robots peuvent s'échanger leurs trajectoires respectives afin de résoudre la situation et de se dégager.
+
+
+L'évolution vers un système de réservation plus intelligent (prenant en compte les fenêtres temporelles) ou vers un système d'enchères sera étudiée dans un second temps.
+
+4. Organisation
+L'approche retenue considère que chaque robot exécute le même code source. Par conséquent, il n'y a pas d'organisation globale imposée au système : les robots n'adoptent pas de rôles particuliers prédéfinis.
+
+
+
