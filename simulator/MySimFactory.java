@@ -418,6 +418,7 @@ public class MySimFactory extends SimFactory {
 
         sb.append("\n").append(sep).append("\n");
         System.out.print(sb);
+        System.out.flush();
     }
 
     // ------------------------------------------------------------------ //
