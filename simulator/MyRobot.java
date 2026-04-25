@@ -49,12 +49,6 @@ public class MyRobot extends ColorInteractionRobot {
     protected int destX;
     protected int destY;
 
-    // Temps de départ/arrivée (pour statistiques futures)
-    protected long tempsDepart;
-    protected long tempsArrivee;
-
-    // Verbose (affichage de debug dans la console)
-    protected boolean verbose;
 
     // Référence à l'environnement global
     protected ColorGridEnvironment env;
@@ -78,31 +72,23 @@ public class MyRobot extends ColorInteractionRobot {
 
     // ------------------------------------------------------------------ //
     //  Réservations (zone_id → id du robot réservant)
-    //  Format messages : RESERVE_START:A1:3  /  RELEASE_START:A1
-    //                    RESERVE_PICKUP:T1:3 /  RELEASE_PICKUP:T1   (ramassage transit)
-    //                    RESERVE_DEPOSIT:T1:3/ RELEASE_DEPOSIT:T1   (dépôt en transit)
-    //                    RESERVE_CHARGE:x,y:3/ RELEASE_CHARGE:x,y
-    //  Protocole priorité : ID le plus bas gagne ; le perdant appelle yieldMission().
     // ------------------------------------------------------------------ //
-    private final Map<String, Integer> reservedStartZones    = new HashMap<>(); // start → robot_id
-    private final Map<String, Integer> reservedTransitPickup = new HashMap<>(); // transit pickup → robot_id
-    private final Map<String, Integer> reservedTransitDeposit= new HashMap<>(); // transit deposit → robot_id
-    private final Map<String, Integer> reservedRechargeZones = new HashMap<>(); // "x,y" → robot_id
+    private final Map<String, Integer> reservedStartZones    = new HashMap<>();
+    private final Map<String, Integer> reservedTransitPickup = new HashMap<>();
+    private final Map<String, Integer> reservedTransitDeposit= new HashMap<>();
+    private final Map<String, Integer> reservedRechargeZones = new HashMap<>();
 
     // ------------------------------------------------------------------ //
     //  Suivi de mission courante
     // ------------------------------------------------------------------ //
-    private String  targetSourceId;         // ID zone source (A1, T1, …)
-    private String  targetDestTransitId;    // ID zone transit destination
-    private boolean targetSourceIsTransit;  // true : ramasse dans transit
-    private boolean targetDestIsTransit;    // true : livre dans transit
-    private int     targetGoalId;           // ID goal de livraison (1 ou 2)
+    private String  targetSourceId;
+    private String  targetDestTransitId;
+    private boolean targetSourceIsTransit;
+    private boolean targetDestIsTransit;
+    private int     targetGoalId;
 
     // ------------------------------------------------------------------ //
-    //  Priorités de mission (calculées au moment de la réservation)
-    //  Zone    : score = batterie − distance_à_la_zone  (plus grand = meilleur)
-    //  Recharge: score = MAX_CHARGE − batterie          (plus grand = plus urgent)
-    //  Arbitrage final en cas d'égalité : ID le plus bas gagne.
+    //  Priorités de mission
     // ------------------------------------------------------------------ //
     private int mySourcePriority  = Integer.MIN_VALUE;
     private int myDepositPriority = Integer.MIN_VALUE;
@@ -113,6 +99,44 @@ public class MyRobot extends ColorInteractionRobot {
 
     /** Compteur de cycles consécutifs sans mouvement (anti-blocage). */
     private int stuckCounter = 0;
+
+    /** Nombre de cycles consécutifs en IDLE sans mission trouvée. */
+    private int idleNoMissionCycles = 0;
+
+    /**
+     * Seuil au-delà duquel les maps de réservation sont purgées pour casser
+     * un éventuel deadlock dû à des réservations périmées.
+     */
+    private static final int IDLE_STALE_THRESHOLD = 20;
+
+    /** Nombre de livraisons accomplies par ce robot. */
+    private int deliveredByThisRobot = 0;
+    public int getDeliveredByThisRobot() { return deliveredByThisRobot; }
+
+    /** Expose l'état courant sous forme de chaîne (utilisé par le dashboard). */
+    public String getEtatString() { return etat.name(); }
+
+    // ------------------------------------------------------------------ //
+    //  Issue 1 : Cache de chemin A*
+    // ------------------------------------------------------------------ //
+    private int[][] cachedPath      = null;
+    private int     cachedPathIndex = 0;
+    private int     lastTargetX     = -1;
+    private int     lastTargetY     = -1;
+
+    // ------------------------------------------------------------------ //
+    //  Issue 2 : Détection d'oscillation
+    // ------------------------------------------------------------------ //
+    private final List<int[]> positionHistory       = new ArrayList<>();
+    private static final int  POSITION_HISTORY_SIZE = 6;
+    private int               oscillationWaitCounter = 0;
+
+    // ------------------------------------------------------------------ //
+    //  Issues 3 & 8 : Cellule bloquante + obstacles temporaires
+    // ------------------------------------------------------------------ //
+    private int[] blockedCell              = null;
+    private int   mutualBlockTimer         = 0;
+    private static final int MUTUAL_BLOCK_THRESHOLD = 3;
 
     // ================================================================== //
     //  Constructeur
@@ -149,20 +173,12 @@ public class MyRobot extends ColorInteractionRobot {
 
     /**
      * Vérifie si le robot est assez proche d'une cellule cible pour interagir.
-     * Accepte distance Manhattan ≤ 1 :
-     *  - distance 0 : le robot est SUR la cellule (possible pour les goals non-obstacles)
-     *  - distance 1 : le robot est dans l'un des 4 voisins orthogonaux (N/S/E/W)
-     * Cela garantit que le pickup et le dépôt fonctionnent depuis n'importe quel
-     * voisin orthogonal, quelle que soit la direction d'approche.
+     * Accepte distance Manhattan ≤ 1.
      */
     protected boolean isNearZone(int row, int col) {
         return distanceManhattan(getX(), getY(), row, col) <= 1;
     }
 
-    /** Conservé pour compatibilité (vérifie distance == 1 strictement). */
-    protected boolean isAdjacentTo(int row, int col) {
-        return distanceManhattan(getX(), getY(), row, col) == 1;
-    }
 
     // ================================================================== //
     //  Recherche de zones
@@ -212,7 +228,6 @@ public class MyRobot extends ColorInteractionRobot {
 
     /**
      * Station de recharge la plus proche – utilisée pour l'ESTIMATION du coût batterie.
-     * Ignore les réservations (on veut la distance minimale théorique).
      */
     protected int[] findClosestRechargePosition() {
         int[] closest = null;
@@ -226,17 +241,12 @@ public class MyRobot extends ColorInteractionRobot {
 
     /**
      * Meilleure station disponible pour la NAVIGATION réelle.
-     * Passe 1 : non réservée ET cellule libre.
-     * Passe 2 : non réservée (peut être en route).
-     * Passe 3 : cellule physiquement libre (même si "réservée" — réservation peut être périmée).
-     * Passe 4 : fallback absolu (la plus proche).
      */
     protected int[] findBestAvailableRechargePosition() {
         int[] best = null;
-        int minDist;
 
         // Passe 1 : non réservée ET cellule physiquement libre
-        minDist = Integer.MAX_VALUE;
+        int minDist = Integer.MAX_VALUE;
         for (int[] pos : rechargePositions) {
             String key = pos[0] + "," + pos[1];
             if (reservedRechargeZones.containsKey(key)) continue;
@@ -248,22 +258,22 @@ public class MyRobot extends ColorInteractionRobot {
         if (best != null) return best;
 
         // Passe 2 : non réservée (peut être en route)
-        minDist = Integer.MAX_VALUE;
+        int minDist2 = Integer.MAX_VALUE;
         for (int[] pos : rechargePositions) {
             String key = pos[0] + "," + pos[1];
             if (reservedRechargeZones.containsKey(key)) continue;
             int d = distanceManhattan(getX(), getY(), pos[0], pos[1]);
-            if (d < minDist) { minDist = d; best = pos; }
+            if (d < minDist2) { minDist2 = d; best = pos; }
         }
         if (best != null) return best;
 
         // Passe 3 : cellule physiquement libre (réservation peut être périmée)
-        minDist = Integer.MAX_VALUE;
+        int minDist3 = Integer.MAX_VALUE;
         for (int[] pos : rechargePositions) {
             Cell c = env.getGrid()[pos[0]][pos[1]];
             if (c != null && c.getContent() != null) continue;
             int d = distanceManhattan(getX(), getY(), pos[0], pos[1]);
-            if (d < minDist) { minDist = d; best = pos; }
+            if (d < minDist3) { minDist3 = d; best = pos; }
         }
         if (best != null) return best;
 
@@ -278,11 +288,7 @@ public class MyRobot extends ColorInteractionRobot {
     /**
      * Carte des obstacles STATIQUES pour A*.
      * Inclut : ColorObstacle, ColorStartZone, ColorTransitZone, ColorExitZone.
-     * Exclut volontairement les autres robots :
-     *   - Inclure les robots provoque des oscillations (le chemin change à chaque
-     *     cycle selon les voisins en mouvement, causant des zigzags perpétuels).
-     *   - La présence d'un robot sur la prochaine cellule est vérifiée en temps
-     *     réel juste avant moveForward() ; le robot attend simplement ce cycle.
+     * Exclut volontairement les autres robots.
      */
     private boolean[][] buildStaticObstacleMap() {
         boolean[][] obs = new boolean[rows][columns];
@@ -304,69 +310,138 @@ public class MyRobot extends ColorInteractionRobot {
     }
 
     // ================================================================== //
+    //  Issue 2 : Historique de position et détection d'oscillation
+    // ================================================================== //
+
+    /**
+     * Enregistre la position courante dans l'historique,
+     * UNIQUEMENT si elle a changé depuis la dernière entrée.
+     *
+     * Correction du bug critique : sans ce garde, un robot stationnaire (IDLE)
+     * remplit l'historique avec la même position, ce qui déclenche une fausse
+     * détection d'oscillation dès qu'il reçoit une mission. Le compteur
+     * oscillationWaitCounter se retrouve alors réinitialisé en boucle, bloquant
+     * le robot à jamais dans MOVING_TO_PACKAGE.
+     */
+    private void updatePositionHistory() {
+        int[] current = {getX(), getY()};
+        if (!positionHistory.isEmpty()) {
+            int[] last = positionHistory.getLast();
+            if (last[0] == current[0] && last[1] == current[1]) return; // pas bougé
+        }
+        positionHistory.add(current);
+        if (positionHistory.size() > POSITION_HISTORY_SIZE) {
+            positionHistory.removeFirst();
+        }
+    }
+
+    /**
+     * Détecte une oscillation de période 2 ou 3 (pattern A-B-A-B ou A-B-C-A-B-C).
+     * @return true si une oscillation est détectée
+     */
+    private boolean detectOscillation() {
+        int n = positionHistory.size();
+        if (n < 4) return false;
+        for (int period = 2; period <= 3 && period * 2 <= n; period++) {
+            boolean isPeriodic = true;
+            for (int i = n - 1; i >= period; i--) {
+                int[] p1 = positionHistory.get(i);
+                int[] p2 = positionHistory.get(i - period);
+                if (p1[0] != p2[0] || p1[1] != p2[1]) { isPeriodic = false; break; }
+            }
+            if (isPeriodic) return true;
+        }
+        return false;
+    }
+
+    // ================================================================== //
     //  Déplacement
     // ================================================================== //
 
     /**
      * Déplace le robot d'un pas vers (targetX, targetY) via A*.
      *
-     * Stratégie :
-     *  1. Carte statique uniquement pour A* → chemin stable, pas d'oscillation.
-     *  2. Si la cellule cible est un obstacle statique (zone), on vise une
-     *     cellule adjacente libre (la plus proche du robot).
-     *  3. Vérification temps-réel sur la cellule suivante avant moveForward() :
-     *     si un autre robot s'y trouve, on attend ce cycle (pas de mouvement aléatoire).
-     *  4. Anti-blocage : après stuckCounter > 5 cycles immobiles consécutifs,
-     *     on choisit un pas latéral libre pour se désengager.
+     * Améliorations :
+     *  1. Cache du chemin A* : recalcule uniquement quand la cible change ou que
+     *     le chemin est invalidé (position hors cache, blocage persistant).
+     *  2. Obstacle temporaire : la cellule bloquante (blockedCell) est passée en
+     *     extra-obstacle au PathFinder après MUTUAL_BLOCK_THRESHOLD cycles bloqués,
+     *     forçant un contournement.
+     *  3. Compteur d'attente oscillation : pause de quelques cycles après détection.
      */
     protected void moveOneStepTo(int targetX, int targetY) {
-        if (isAt(targetX, targetY)) return;
+        if (isAt(targetX, targetY)) { cachedPath = null; return; }
 
-        boolean[][] obs = buildStaticObstacleMap();
-
-        int[][] path;
-
-        boolean targetIsObstacle = targetX >= 0 && targetX < rows
-                && targetY >= 0 && targetY < columns && obs[targetX][targetY];
-
-        if (targetIsObstacle) {
-            // ---- cible = zone obstacle : collecter les 4 voisins libres comme buts ----
-            // Utiliser A* multi-cibles : le robot trouve le chemin optimal vers
-            // n'importe lequel des voisins orthogonaux accessibles, quelle que
-            // soit la direction d'approche.
-            List<int[]> adjList = new ArrayList<>();
-            for (int[] d : new int[][]{{-1,0},{1,0},{0,-1},{0,1}}) {
-                int nx = targetX + d[0], ny = targetY + d[1];
-                if (nx >= 0 && nx < rows && ny >= 0 && ny < columns && !obs[nx][ny])
-                    adjList.add(new int[]{nx, ny});
-            }
-            if (adjList.isEmpty()) return; // zone entièrement entourée d'obstacles statiques
-
-            // Si déjà dans l'un des voisins → pas besoin de bouger
-            for (int[] adj : adjList) {
-                if (isAt(adj[0], adj[1])) return;
-            }
-
-            path = PathFinder.aStarToAny(
-                    new int[]{getX(), getY()},
-                    adjList.toArray(new int[0][]),
-                    rows, columns, obs);
-        } else {
-            // ---- cible = cellule libre (goal position, station de recharge…) ----
-            if (isAt(targetX, targetY)) return;
-            path = PathFinder.aStar(
-                    new int[]{getX(), getY()},
-                    new int[]{targetX, targetY},
-                    rows, columns, obs);
-        }
-
-        if (path == null || path.length < 2) {
-            if (++stuckCounter > 3) { stuckCounter = 0; tryRandomStep(obs); }
+        // Pause forcée après détection d'oscillation
+        if (oscillationWaitCounter > 0) {
+            oscillationWaitCounter--;
             return;
         }
 
-        int nextX = path[1][0];
-        int nextY = path[1][1];
+        // Invalider le cache si la cible a changé
+        if (targetX != lastTargetX || targetY != lastTargetY) {
+            cachedPath   = null;
+            lastTargetX  = targetX;
+            lastTargetY  = targetY;
+        }
+
+        // Valider le cache : la position courante doit coïncider avec path[cachedPathIndex]
+        if (cachedPath != null && (cachedPathIndex >= cachedPath.length
+                || cachedPath[cachedPathIndex][0] != getX()
+                || cachedPath[cachedPathIndex][1] != getY())) {
+            cachedPath = null;
+        }
+
+        // Recalcul du chemin si nécessaire
+        if (cachedPath == null) {
+            boolean[][] obs = buildStaticObstacleMap();
+            // Issue 8 : passer la cellule bloquante comme obstacle temporaire
+            List<int[]> extra = (blockedCell != null)
+                    ? Collections.singletonList(blockedCell) : null;
+
+            boolean targetIsObstacle = targetX >= 0 && targetX < rows
+                    && targetY >= 0 && targetY < columns && obs[targetX][targetY];
+
+            if (targetIsObstacle) {
+                List<int[]> adjList = new ArrayList<>();
+                for (int[] d : new int[][]{{-1,0},{1,0},{0,-1},{0,1}}) {
+                    int nx = targetX + d[0], ny = targetY + d[1];
+                    if (nx >= 0 && nx < rows && ny >= 0 && ny < columns && !obs[nx][ny])
+                        adjList.add(new int[]{nx, ny});
+                }
+                if (adjList.isEmpty()) return;
+                for (int[] adj : adjList) {
+                    if (isAt(adj[0], adj[1])) { cachedPath = null; return; }
+                }
+                cachedPath = PathFinder.aStarToAny(
+                        new int[]{getX(), getY()},
+                        adjList.toArray(new int[0][]),
+                        rows, columns, obs, extra);
+            } else {
+                cachedPath = PathFinder.aStar(
+                        new int[]{getX(), getY()},
+                        new int[]{targetX, targetY},
+                        rows, columns, obs, extra);
+            }
+            cachedPathIndex = 0;
+        }
+
+        // Invalider le chemin si length insuffisante ou index en débordement
+        if (cachedPath != null && (cachedPath.length < 2 || cachedPathIndex + 1 >= cachedPath.length)) {
+            cachedPath = null;
+        }
+        if (cachedPath == null) {
+            // Aucun chemin trouvé (même avec contournement)
+            if (++stuckCounter > 3) {
+                stuckCounter  = 0;
+                blockedCell   = null;
+                tryRandomStep(buildStaticObstacleMap());
+            }
+            return;
+        }
+
+        int nextX = cachedPath[cachedPathIndex + 1][0];
+        int nextY = cachedPath[cachedPathIndex + 1][1];
 
         // Orientation vers la prochaine cellule
         int dx = nextX - getX(), dy = nextY - getY();
@@ -378,35 +453,35 @@ public class MyRobot extends ColorInteractionRobot {
         // Vérification temps-réel : obstacle dynamique (autre robot / worker)
         Cell nextCell = env.getGrid()[nextX][nextY];
         if (nextCell != null && nextCell.getContent() != null) {
-            if (++stuckCounter > 5) { stuckCounter = 0; tryRandomStep(obs); }
+            // Issue 3 : suivre la cellule bloquante
+            blockedCell = new int[]{nextX, nextY};
+            mutualBlockTimer++;
+            if (mutualBlockTimer >= MUTUAL_BLOCK_THRESHOLD) {
+                // Forcer recomputation avec la cellule bloquante comme obstacle
+                cachedPath       = null;
+                mutualBlockTimer = 0;
+            }
+            if (++stuckCounter > 5) {
+                stuckCounter = 0;
+                blockedCell  = null;
+                tryRandomStep(buildStaticObstacleMap());
+            }
             return;
         }
 
-        stuckCounter = 0;
+        // Mouvement réussi
+        stuckCounter     = 0;
+        mutualBlockTimer = 0;
+        blockedCell      = null;
+        cachedPathIndex++;
         moveForward();
     }
 
-    /**
-     * Retourne la cellule adjacente à (zoneX, zoneY) la plus proche du robot,
-     * non bloquée dans la carte statique.
-     */
-    private int[] findBestAdjacentFreeCell(int zoneX, int zoneY, boolean[][] obs) {
-        int[][] dirs = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-        int[] best = null;
-        int minDist = Integer.MAX_VALUE;
-        for (int[] d : dirs) {
-            int nx = zoneX + d[0], ny = zoneY + d[1];
-            if (nx >= 0 && nx < rows && ny >= 0 && ny < columns && !obs[nx][ny]) {
-                int dist = distanceManhattan(getX(), getY(), nx, ny);
-                if (dist < minDist) { minDist = dist; best = new int[]{nx, ny}; }
-            }
-        }
-        return best;
-    }
 
     /**
-     * Choisit aléatoirement une cellule adjacente libre (statiquement et dynamiquement)
-     * et s'y déplace. Utilisé pour briser un blocage persistant.
+     * Issue 10 : Choisit une cellule adjacente libre pour se désengager d'un blocage.
+     * Préfère la cellule qui s'éloigne le plus de la cellule bloquante.
+     * Fallback : cellule libre aléatoire.
      */
     private void tryRandomStep(boolean[][] obs) {
         int[][] dirs = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
@@ -419,7 +494,20 @@ public class MyRobot extends ColorInteractionRobot {
             if (c == null || c.getContent() == null) candidates.add(new int[]{nx, ny});
         }
         if (candidates.isEmpty()) return;
-        int[] chosen = candidates.get(rnd.nextInt(candidates.size()));
+
+        // Préférer la cellule la plus éloignée du bloquant connu
+        int[] chosen;
+        if (blockedCell != null) {
+            chosen = candidates.getFirst();
+            int maxDist = -1;
+            for (int[] cand : candidates) {
+                int d = distanceManhattan(cand[0], cand[1], blockedCell[0], blockedCell[1]);
+                if (d > maxDist) { maxDist = d; chosen = cand; }
+            }
+        } else {
+            chosen = candidates.get(rnd.nextInt(candidates.size()));
+        }
+
         int dx = chosen[0] - getX(), dy = chosen[1] - getY();
         if      (dx == -1) orientation = Orientation.up;
         else if (dx ==  1) orientation = Orientation.down;
@@ -442,12 +530,6 @@ public class MyRobot extends ColorInteractionRobot {
 
     /**
      * Détermine si ce robot doit céder la ressource à l'autre.
-     * L'autre gagne si son score dépasse le mien d'au moins YIELD_MARGIN,
-     * ou si les scores sont égaux et son ID est inférieur au mien.
-     *
-     * @param otherId       ID de l'autre robot
-     * @param otherPriority score de priorité de l'autre (batterie−distance ou MAX−batterie)
-     * @param myPriority    score de priorité de ce robot (stocké au moment de la réservation)
      */
     private boolean shouldYield(int otherId, int otherPriority, int myPriority) {
         if (otherPriority > myPriority + YIELD_MARGIN) return true;
@@ -460,24 +542,27 @@ public class MyRobot extends ColorInteractionRobot {
     // ================================================================== //
 
     /**
-     * Abandonne la mission courante et libère toutes les réservations associées.
-     * Appelé quand un robot de priorité supérieure (ID inférieur) revendique
-     * la même ressource dans le cycle précédent.
+     * Abandonne la mission courante et libère ses propres réservations.
+     *
+     * Les messages RELEASE incluent l'ID de l'émetteur ("<type>:zoneId:robotId").
+     * Le handler ne supprime l'entrée que si reservedMap.get(zoneId) == robotId,
+     * ce qui empêche un PERDANT d'effacer la réservation du GAGNANT.
      */
     private void yieldMission() {
         switch (etat) {
             case MOVING_TO_PACKAGE:
                 if (targetSourceId != null) {
-                    if (targetSourceIsTransit) broadcast("RELEASE_PICKUP:" + targetSourceId);
-                    else                       broadcast("RELEASE_START:"  + targetSourceId);
+                    if (targetSourceIsTransit)
+                        broadcast("RELEASE_PICKUP:" + targetSourceId + ":" + getId());
+                    else
+                        broadcast("RELEASE_START:"  + targetSourceId + ":" + getId());
                 }
                 if (targetDestIsTransit && targetDestTransitId != null)
-                    broadcast("RELEASE_DEPOSIT:" + targetDestTransitId);
+                    broadcast("RELEASE_DEPOSIT:" + targetDestTransitId + ":" + getId());
                 break;
             case TRANSPORT_TO_GOAL:
-                // Libérer la réservation de dépôt transit si abandonnée (ex : urgence batterie)
                 if (targetDestIsTransit && targetDestTransitId != null)
-                    broadcast("RELEASE_DEPOSIT:" + targetDestTransitId);
+                    broadcast("RELEASE_DEPOSIT:" + targetDestTransitId + ":" + getId());
                 break;
             case MOVING_TO_CHARGE:
                 broadcast("RELEASE_CHARGE:" + destX + "," + destY);
@@ -490,6 +575,9 @@ public class MyRobot extends ColorInteractionRobot {
         mySourcePriority    = Integer.MIN_VALUE;
         myDepositPriority   = Integer.MIN_VALUE;
         myChargePriority    = Integer.MIN_VALUE;
+        cachedPath          = null;
+        positionHistory.clear();
+        oscillationWaitCounter = 0;
         etat                = Etat.IDLE;
     }
 
@@ -499,6 +587,20 @@ public class MyRobot extends ColorInteractionRobot {
 
     /** IDLE : choisit la meilleure action selon le niveau de batterie et l'état des zones. */
     private void handleIdle() {
+        // ── Bug 3 : purge des réservations périmées ──────────────────────────
+        // Si le robot reste IDLE trop longtemps sans trouver de mission, les maps
+        // de réservation contiennent probablement des entrées périmées (RELEASE
+        // manqué). On les efface pour débloquer la situation.
+        if (idleNoMissionCycles > IDLE_STALE_THRESHOLD) {
+            System.out.println(getName() + " [WARN] Réservations périmées purgées (idle="
+                    + idleNoMissionCycles + ")");
+            reservedStartZones.clear();
+            reservedTransitPickup.clear();
+            reservedTransitDeposit.clear();
+            reservedRechargeZones.clear();
+            idleNoMissionCycles = 0;
+        }
+
         int[] recharge = findClosestRechargePosition();
         if (recharge == null) return;
 
@@ -512,8 +614,6 @@ public class MyRobot extends ColorInteractionRobot {
 
             for (Map.Entry<Integer, int[]> ge : goalPositions.entrySet()) {
                 int[] gp = ge.getValue();
-                // Pas de facteur ×1.5 : cohérent avec les cas 2 et 3, évite le "no-man's land"
-                // où batterie ∈ [80%, coût×1.5) → robot bloqué en IDLE sans se recharger.
                 int cost = distToStart
                          + distanceManhattan(sx, sy, gp[0], gp[1])
                          + distanceManhattan(gp[0], gp[1], recharge[0], recharge[1]);
@@ -527,6 +627,7 @@ public class MyRobot extends ColorInteractionRobot {
                     myDepositPriority = Integer.MIN_VALUE;
                     broadcast("RESERVE_START:" + targetSourceId + ":" + getId()
                             + ":" + chargeLevel + ":" + distToStart);
+                    idleNoMissionCycles = 0;
                     return;
                 }
             }
@@ -550,6 +651,7 @@ public class MyRobot extends ColorInteractionRobot {
                             + ":" + chargeLevel + ":" + distToStart);
                     broadcast("RESERVE_DEPOSIT:" + targetDestTransitId + ":" + getId()
                             + ":" + chargeLevel + ":" + distToTransitViaStart);
+                    idleNoMissionCycles = 0;
                     return;
                 }
             }
@@ -575,24 +677,31 @@ public class MyRobot extends ColorInteractionRobot {
                     myDepositPriority = Integer.MIN_VALUE;
                     broadcast("RESERVE_PICKUP:" + targetSourceId + ":" + getId()
                             + ":" + chargeLevel + ":" + distToTransit);
+                    idleNoMissionCycles = 0;
                     return;
                 }
             }
         }
 
-        // ---- Cas 4 : recharge (seulement si besoin réel) ----
-        if (chargeLevel < MAX_CHARGE * 0.8) {
+        // ---- Cas 4 : recharge -----------------------------------------------
+        // Si aucune mission n'est réalisable (cas 1/2/3 ont échoué) ET que la
+        // batterie n'est pas pleine, on recharge.
+        // Bug 2 corrigé : l'ancien seuil fixe à 80 % bloquait les robots dont
+        // la batterie était entre 80 % et MAX_CHARGE sans mission disponible.
+        // Désormais, tout robot inactif avec batterie < MAX_CHARGE va recharger.
+        idleNoMissionCycles++;   // aucune mission n'a été prise ce cycle
+        if (chargeLevel < MAX_CHARGE) {
             int[] rechargeTarget = findBestAvailableRechargePosition();
             if (rechargeTarget != null) {
                 destX = rechargeTarget[0];
                 destY = rechargeTarget[1];
-                myChargePriority = MAX_CHARGE - chargeLevel; // urgence : batterie basse → score élevé
+                myChargePriority = MAX_CHARGE - chargeLevel;
                 broadcast("RESERVE_CHARGE:" + destX + "," + destY + ":" + getId()
                         + ":" + chargeLevel);
                 etat = Etat.MOVING_TO_CHARGE;
+                idleNoMissionCycles = 0;
             }
         }
-        // batterie suffisante + aucune tâche → IDLE, les zones se libèreront au prochain cycle
     }
 
     /** MOVING_TO_PACKAGE : se déplace puis ramasse le colis quand proche de la zone source. */
@@ -601,24 +710,22 @@ public class MyRobot extends ColorInteractionRobot {
             ColorPackage pack = null;
 
             if (!targetSourceIsTransit) {
-                // Ramasse dans zone de départ
                 ColorStartZone z = startZonesMap.get(targetSourceId);
                 if (z != null && !z.getPackages().isEmpty()) {
                     pack = z.getPackages().getFirst();
                     z.removePackage(pack);
                     pack.setState(PackageState.DEPART);
                     carriedPackage = pack;
-                    broadcast("RELEASE_START:" + targetSourceId);
+                    broadcast("RELEASE_START:" + targetSourceId + ":" + getId());
                 }
             } else {
-                // Ramasse dans zone de transit
                 ColorTransitZone z = transitZonesMap.get(targetSourceId);
                 if (z != null && !z.getPackages().isEmpty()) {
                     pack = z.getPackages().getFirst();
                     z.removePackage(pack);
                     pack.setState(PackageState.TRANSIT);
                     carriedPackage = pack;
-                    broadcast("RELEASE_PICKUP:" + targetSourceId);
+                    broadcast("RELEASE_PICKUP:" + targetSourceId + ":" + getId());
                 }
             }
 
@@ -634,12 +741,14 @@ public class MyRobot extends ColorInteractionRobot {
                     destX = gp[0]; destY = gp[1];
                     targetGoalId = gid;
                 }
+                cachedPath = null; // nouvelle destination → invalider le cache
                 etat = Etat.TRANSPORT_TO_GOAL;
             } else {
-                // Zone vide entre-temps → annuler réservations et revenir à IDLE
-                broadcast("RELEASE_START:"   + targetSourceId);
-                broadcast("RELEASE_PICKUP:"  + targetSourceId);
-                broadcast("RELEASE_DEPOSIT:" + targetDestTransitId);
+                broadcast("RELEASE_START:"  + targetSourceId + ":" + getId());
+                broadcast("RELEASE_PICKUP:" + targetSourceId + ":" + getId());
+                if (targetDestTransitId != null)
+                    broadcast("RELEASE_DEPOSIT:" + targetDestTransitId + ":" + getId());
+                cachedPath = null;
                 etat = Etat.IDLE;
             }
         } else {
@@ -658,35 +767,51 @@ public class MyRobot extends ColorInteractionRobot {
                         z.addPackage(carriedPackage);
                         carriedPackage = null;
                     }
-                    broadcast("RELEASE_DEPOSIT:" + targetDestTransitId);
+                    broadcast("RELEASE_DEPOSIT:" + targetDestTransitId + ":" + getId());
+                    cachedPath = null;
                     etat = Etat.IDLE;
                 } else {
                     // Transit plein → chercher autre transit ou livrer directement
                     String oldDepositId = targetDestTransitId;
-                    ColorTransitZone alt = findBestTransitZoneWithCapacity(); // met à jour targetDestTransitId
+                    ColorTransitZone alt = findBestTransitZoneWithCapacity();
                     if (alt != null) {
-                        broadcast("RELEASE_DEPOSIT:" + oldDepositId);
-                        broadcast("RESERVE_DEPOSIT:" + targetDestTransitId + ":" + getId());
+                        int distToAlt = distanceManhattan(getX(), getY(), alt.getX(), alt.getY());
+                        myDepositPriority = chargeLevel - distToAlt;
+                        broadcast("RELEASE_DEPOSIT:" + oldDepositId + ":" + getId());
+                        broadcast("RESERVE_DEPOSIT:" + targetDestTransitId + ":" + getId()
+                                + ":" + chargeLevel + ":" + distToAlt);
                         destX = alt.getX(); destY = alt.getY();
+                        cachedPath = null;
                     } else {
-                        broadcast("RELEASE_DEPOSIT:" + oldDepositId);
-                        targetDestIsTransit = false;
+                        // Issue 6 : vérifier que la batterie permet la livraison directe
                         int gid = (carriedPackage != null && carriedPackage.getDestinationGoalId() > 0)
                                 ? carriedPackage.getDestinationGoalId() : targetGoalId;
                         int[] gp = goalPositions.getOrDefault(gid,
                                 goalPositions.values().iterator().next());
-                        destX = gp[0]; destY = gp[1];
+                        int[] rechargeEst = findClosestRechargePosition();
+                        int directCost = distanceManhattan(getX(), getY(), gp[0], gp[1])
+                                + (rechargeEst != null
+                                    ? distanceManhattan(gp[0], gp[1], rechargeEst[0], rechargeEst[1])
+                                    : 0);
+                        if (chargeLevel >= directCost) {
+                            broadcast("RELEASE_DEPOSIT:" + oldDepositId + ":" + getId());
+                            targetDestIsTransit = false;
+                            destX = gp[0]; destY = gp[1];
+                            cachedPath = null;
+                        }
+                        // else : batterie insuffisante → attendre ce cycle (transit peut se libérer)
                     }
                 }
             } else {
                 // Livraison finale au point de sortie
                 if (carriedPackage != null) {
                     carriedPackage.setState(PackageState.ARRIVED);
+                    deliveredByThisRobot++;
                     MySimFactory.deliveredCount++;
-                    System.out.println(getName() + " → livraison #"
-                            + MySimFactory.deliveredCount + " (batterie=" + chargeLevel + ")");
+                    MySimFactory.deliveredPerGoal.merge(targetGoalId, 1, Integer::sum);
                     carriedPackage = null;
                 }
+                cachedPath = null;
                 etat = Etat.IDLE;
             }
         } else {
@@ -697,16 +822,14 @@ public class MyRobot extends ColorInteractionRobot {
     /** MOVING_TO_CHARGE : se déplace jusqu'à la station ; redirige si occupée. */
     private void handleMovingToCharge() {
         if (isAt(destX, destY)) {
+            cachedPath = null;
             etat = Etat.CHARGING;
             return;
         }
 
-        // Si la station cible est occupée par un autre agent (robot/travailleur),
-        // chercher une alternative pour éviter l'interblocage.
         Cell targetCell = env.getGrid()[destX][destY];
         if (targetCell != null && targetCell.getContent() != null) {
             String oldKey = destX + "," + destY;
-            // Masquer temporairement la station pour forcer le filtre dans findBest...
             Integer savedVal = reservedRechargeZones.put(oldKey, Integer.MAX_VALUE);
             int[] alt = findBestAvailableRechargePosition();
             if (savedVal == null) reservedRechargeZones.remove(oldKey);
@@ -719,8 +842,8 @@ public class MyRobot extends ColorInteractionRobot {
                 myChargePriority = MAX_CHARGE - chargeLevel;
                 broadcast("RESERVE_CHARGE:" + destX + "," + destY + ":" + getId()
                         + ":" + chargeLevel);
+                cachedPath = null;
             }
-            // Sinon : aucune alternative → attendre que la station se libère
             return;
         }
 
@@ -743,14 +866,6 @@ public class MyRobot extends ColorInteractionRobot {
     public void step() {
         readMessages();
 
-        if (debug == 1) {
-            System.out.println(getName() + " | Etat: " + etat
-                    + " | Position: (" + getX() + "," + getY() + ")"
-                    + " | Batterie: " + chargeLevel
-                    + " | Colis: " + (carriedPackage != null ? carriedPackage.getId() : "None"));
-
-        }
-
         // Consommation de batterie lors des déplacements
         if (etat == Etat.MOVING_TO_PACKAGE
                 || etat == Etat.TRANSPORT_TO_GOAL
@@ -763,7 +878,6 @@ public class MyRobot extends ColorInteractionRobot {
                 && etat != Etat.CHARGING
                 && etat != Etat.MOVING_TO_CHARGE) {
             if (carriedPackage != null) carriedPackage = null;
-            // Libérer les réservations de la mission abandonnée
             yieldMission();
             int[] r = findBestAvailableRechargePosition();
             if (r != null) {
@@ -772,7 +886,18 @@ public class MyRobot extends ColorInteractionRobot {
                 broadcast("RESERVE_CHARGE:" + destX + "," + destY + ":" + getId()
                         + ":" + chargeLevel);
                 etat  = Etat.MOVING_TO_CHARGE;
+                idleNoMissionCycles = 0;
             }
+        }
+
+        // Issue 2 : mise à jour de l'historique et détection d'oscillation
+        updatePositionHistory();
+        if (detectOscillation()) {
+            cachedPath             = null;
+            blockedCell            = null;
+            positionHistory.clear();
+            // Pause aléatoire de 2-4 cycles pour laisser l'autre robot avancer
+            oscillationWaitCounter = 2 + rnd.nextInt(3);
         }
 
         switch (etat) {
@@ -797,7 +922,7 @@ public class MyRobot extends ColorInteractionRobot {
             String[] p = c.substring("RESERVE_START:".length()).split(":");
             if (p.length < 4) return;
             String zoneId = p[0]; int otherId = Integer.parseInt(p[1]);
-            int otherPri = Integer.parseInt(p[2]) - Integer.parseInt(p[3]); // battery - distance
+            int otherPri = Integer.parseInt(p[2]) - Integer.parseInt(p[3]);
 
             boolean conflict = zoneId.equals(targetSourceId)
                     && !targetSourceIsTransit && etat == Etat.MOVING_TO_PACKAGE;
@@ -807,9 +932,19 @@ public class MyRobot extends ColorInteractionRobot {
                 }
             } else { reservedStartZones.put(zoneId, otherId); }
 
-        // ── RELEASE_START:zoneId ──────────────────────────────────────────
+        // ── RELEASE_START:zoneId:robotId ─────────────────────────────────
         } else if (c.startsWith("RELEASE_START:")) {
-            reservedStartZones.remove(c.substring("RELEASE_START:".length()));
+            String[] p = c.substring("RELEASE_START:".length()).split(":", 2);
+            if (p.length == 2) {
+                // Format moderne avec ID : ne libère que si c'est le bon détenteur
+                try {
+                    int rid = Integer.parseInt(p[1]);
+                    if (reservedStartZones.getOrDefault(p[0], -1) == rid)
+                        reservedStartZones.remove(p[0]);
+                } catch (NumberFormatException ignored) {}
+            } else {
+                reservedStartZones.remove(p[0]);
+            }
 
         // ── RESERVE_PICKUP:zoneId:otherId:battery:distance ────────────────
         } else if (c.startsWith("RESERVE_PICKUP:")) {
@@ -826,9 +961,18 @@ public class MyRobot extends ColorInteractionRobot {
                 }
             } else { reservedTransitPickup.put(zoneId, otherId); }
 
-        // ── RELEASE_PICKUP:zoneId ─────────────────────────────────────────
+        // ── RELEASE_PICKUP:zoneId:robotId ────────────────────────────────
         } else if (c.startsWith("RELEASE_PICKUP:")) {
-            reservedTransitPickup.remove(c.substring("RELEASE_PICKUP:".length()));
+            String[] p = c.substring("RELEASE_PICKUP:".length()).split(":", 2);
+            if (p.length == 2) {
+                try {
+                    int rid = Integer.parseInt(p[1]);
+                    if (reservedTransitPickup.getOrDefault(p[0], -1) == rid)
+                        reservedTransitPickup.remove(p[0]);
+                } catch (NumberFormatException ignored) {}
+            } else {
+                reservedTransitPickup.remove(p[0]);
+            }
 
         // ── RESERVE_DEPOSIT:zoneId:otherId:battery:distance ───────────────
         } else if (c.startsWith("RESERVE_DEPOSIT:")) {
@@ -846,17 +990,26 @@ public class MyRobot extends ColorInteractionRobot {
                 }
             } else { reservedTransitDeposit.put(zoneId, otherId); }
 
-        // ── RELEASE_DEPOSIT:zoneId ────────────────────────────────────────
+        // ── RELEASE_DEPOSIT:zoneId:robotId ───────────────────────────────
         } else if (c.startsWith("RELEASE_DEPOSIT:")) {
-            reservedTransitDeposit.remove(c.substring("RELEASE_DEPOSIT:".length()));
+            String[] p = c.substring("RELEASE_DEPOSIT:".length()).split(":", 2);
+            if (p.length == 2) {
+                try {
+                    int rid = Integer.parseInt(p[1]);
+                    if (reservedTransitDeposit.getOrDefault(p[0], -1) == rid)
+                        reservedTransitDeposit.remove(p[0]);
+                } catch (NumberFormatException ignored) {}
+            } else {
+                reservedTransitDeposit.remove(p[0]);
+            }
 
         // ── RESERVE_CHARGE:x,y:otherId:battery ───────────────────────────
         } else if (c.startsWith("RESERVE_CHARGE:")) {
             String[] p = c.substring("RESERVE_CHARGE:".length()).split(":");
             if (p.length < 3) return;
             String key = p[0]; int otherId = Integer.parseInt(p[1]);
-            int otherBattery  = Integer.parseInt(p[2]);
-            int otherChargePri = MAX_CHARGE - otherBattery; // urgence
+            int otherBattery   = Integer.parseInt(p[2]);
+            int otherChargePri = MAX_CHARGE - otherBattery;
 
             boolean conflict = key.equals(destX + "," + destY)
                     && etat == Etat.MOVING_TO_CHARGE;
@@ -880,7 +1033,6 @@ public class MyRobot extends ColorInteractionRobot {
     // ================================================================== //
     //  Diagnostic
     // ================================================================== //
-    public String getEtatName() { return etat.name(); }
 
     @Override
     public String toString() {

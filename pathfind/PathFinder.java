@@ -18,7 +18,8 @@ public class PathFinder {
 
     public static int[][] aStar(int[] start, int[] goal,
                                 int rows, int columns,
-                                boolean[][] obstacles) {
+                                boolean[][] obstacles,
+                                java.util.List<int[]> extraObstacles) {
 
         // Validation de base
         if (start[0] < 0 || start[0] >= rows || start[1] < 0 || start[1] >= columns) return null;
@@ -63,6 +64,17 @@ public class PathFinder {
                 if (nx < 0 || nx >= rows || ny < 0 || ny >= columns) continue;
                 if (obstacles[nx][ny]) continue;
 
+                boolean isExtra = false;
+                if (extraObstacles != null) {
+                    for (int[] eo : extraObstacles) {
+                        if (eo[0] == nx && eo[1] == ny) {
+                            isExtra = true;
+                            break;
+                        }
+                    }
+                }
+                if (isExtra) continue;
+
                 String nk = key(nx, ny);
                 if (closedSet.contains(nk)) continue;
 
@@ -103,7 +115,8 @@ public class PathFinder {
      */
     public static int[][] aStarToAny(int[] start, int[][] goals,
                                      int rows, int columns,
-                                     boolean[][] obstacles) {
+                                     boolean[][] obstacles,
+                                     java.util.List<int[]> extraObstacles) {
         if (goals == null || goals.length == 0) return null;
         if (start[0] < 0 || start[0] >= rows || start[1] < 0 || start[1] >= columns) return null;
         if (obstacles[start[0]][start[1]]) return null;
@@ -145,6 +158,17 @@ public class PathFinder {
                 int ny = current.y + dir[1];
                 if (nx < 0 || nx >= rows || ny < 0 || ny >= columns) continue;
                 if (obstacles[nx][ny]) continue;
+
+                boolean isExtra = false;
+                if (extraObstacles != null) {
+                    for (int[] eo : extraObstacles) {
+                        if (eo[0] == nx && eo[1] == ny) {
+                            isExtra = true;
+                            break;
+                        }
+                    }
+                }
+                if (isExtra) continue;
 
                 String nk = key(nx, ny);
                 if (closedSet.contains(nk)) continue;
