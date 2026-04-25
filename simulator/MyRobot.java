@@ -389,32 +389,45 @@ public class MyRobot extends ColorInteractionRobot {
     protected void moveOneStepTo(int targetX, int targetY) {
         if (isAt(targetX, targetY)) { cachedPath = null; return; }
 
-        // Pause forcée après détection d'oscillation
+        // --- INJECTION DEBUG ---
+        boolean isOnRechargeZone = false;
+        for (int[] r : rechargePositions) {
+            if (r[0] == getX() && r[1] == getY()) {
+                isOnRechargeZone = true; break;
+            }
+        }
+        boolean isDebug = ((etat == Etat.MOVING_TO_PACKAGE || chargeLevel == 100) && isOnRechargeZone);
+
+        if (isDebug) {
+            System.out.println("\n[DEBUG] " + getName() + " (Bat:" + chargeLevel + "%) est SUR UNE STATION. Cible : (" + targetX + "," + targetY + ")");
+            System.out.println("   -> cachedPath actuel : " + (cachedPath == null ? "NULL" : "Valide (idx: " + cachedPathIndex + "/" + cachedPath.length + ")"));
+        }
+        // -----------------------
+
         if (oscillationWaitCounter > 0) {
+            if (isDebug) System.out.println("   -> Bloqué par oscillationWaitCounter");
             oscillationWaitCounter--;
             return;
         }
 
-        // Invalider le cache si la cible a changé
         if (targetX != lastTargetX || targetY != lastTargetY) {
-            cachedPath   = null;
-            lastTargetX  = targetX;
-            lastTargetY  = targetY;
+            if (isDebug) System.out.println("   -> Invalidation du chemin (changement de cible)");
+            cachedPath = null;
+            lastTargetX = targetX;
+            lastTargetY = targetY;
         }
 
-        // Valider le cache : la position courante doit coïncider avec path[cachedPathIndex]
         if (cachedPath != null && (cachedPathIndex >= cachedPath.length
                 || cachedPath[cachedPathIndex][0] != getX()
                 || cachedPath[cachedPathIndex][1] != getY())) {
+            if (isDebug) System.out.println("   -> Invalidation du chemin (désynchronisation GPS/Physique)");
             cachedPath = null;
         }
 
-        // Recalcul du chemin si nécessaire
         if (cachedPath == null) {
+            if (isDebug) System.out.println("   -> Lancement du PathFinder A*...");
             boolean[][] obs = buildStaticObstacleMap();
-            // Issue 8 : passer la cellule bloquante comme obstacle temporaire
-            List<int[]> extra = (blockedCell != null)
-                    ? Collections.singletonList(blockedCell) : null;
+            List<int[]> extra = (blockedCell != null) ? Collections.singletonList(blockedCell) : null;
 
             boolean targetIsObstacle = targetX >= 0 && targetX < rows
                     && targetY >= 0 && targetY < columns && obs[targetX][targetY];
@@ -426,9 +439,9 @@ public class MyRobot extends ColorInteractionRobot {
                     if (nx >= 0 && nx < rows && ny >= 0 && ny < columns && !obs[nx][ny])
                         adjList.add(new int[]{nx, ny});
                 }
-                if (adjList.isEmpty()) return;
-                for (int[] adj : adjList) {
-                    if (isAt(adj[0], adj[1])) { cachedPath = null; return; }
+                if (adjList.isEmpty()) {
+                    if (isDebug) System.out.println("   -> ERREUR : La cible est un obstacle et n'a aucune case adjacente libre !");
+                    return;
                 }
                 cachedPath = PathFinder.aStarToAny(
                         new int[]{getX(), getY()},
@@ -441,15 +454,18 @@ public class MyRobot extends ColorInteractionRobot {
                         rows, columns, obs, extra);
             }
             cachedPathIndex = 0;
+
+            if (isDebug) {
+                if (cachedPath == null) System.out.println("   -> A* a retourné NULL ! Le robot est emmuré vivant pour l'algorithme.");
+                else System.out.println("   -> A* a trouvé un chemin de " + cachedPath.length + " pas.");
+            }
         }
 
-        // Invalider le chemin si length insuffisante ou index en débordement
-        if (cachedPath != null && (cachedPath.length < 2 || cachedPathIndex + 1 >= cachedPath.length)) {
+        if (cachedPath == null || cachedPath.length < 2 || cachedPathIndex + 1 >= cachedPath.length) {
+            if (isDebug) System.out.println("   -> Chemin inutilisable. Increment stuckCounter: " + (stuckCounter + 1));
             cachedPath = null;
-        }
-        if (cachedPath == null) {
-            // Aucun chemin trouvé (même avec contournement)
             if (++stuckCounter > 3) {
+                if (isDebug) System.out.println("   -> stuckCounter > 3 : Tentative de tryRandomStep !");
                 stuckCounter  = 0;
                 blockedCell   = null;
                 tryRandomStep(buildStaticObstacleMap());
@@ -460,69 +476,48 @@ public class MyRobot extends ColorInteractionRobot {
         int nextX = cachedPath[cachedPathIndex + 1][0];
         int nextY = cachedPath[cachedPathIndex + 1][1];
 
-        // Orientation vers la prochaine cellule
+        if (isDebug) System.out.println("   -> Le prochain pas demandé est : (" + nextX + "," + nextY + ")");
+
+        // Orientation
         int dx = nextX - getX(), dy = nextY - getY();
         if      (dx == -1) orientation = Orientation.up;
         else if (dx ==  1) orientation = Orientation.down;
         else if (dy == -1) orientation = Orientation.left;
         else if (dy ==  1) orientation = Orientation.right;
 
-        // Vérification temps-réel : obstacle dynamique (autre robot / worker)
-        // Vérification temps-réel : obstacle dynamique (autre robot / worker)
+        // Vérification d'obstacle
         Cell nextCell = env.getGrid()[nextX][nextY];
         if (nextCell != null && nextCell.getContent() != null) {
             SituatedComponent comp = nextCell.getContent();
-
             boolean isAgent = (comp instanceof Robot) || comp.getClass().getSimpleName().contains("Worker");
+
+            if (isDebug) System.out.println("   -> OBSTACLE DÉTECTÉ sur le prochain pas : " + comp.getClass().getSimpleName() + " (isAgent=" + isAgent + ")");
+
             if (isAgent) {
                 blockedCell = new int[]{nextX, nextY};
                 mutualBlockTimer++;
                 if (mutualBlockTimer >= MUTUAL_BLOCK_THRESHOLD) {
+                    if (isDebug) System.out.println("   -> mutualBlockTimer atteint : invalidation du chemin.");
                     cachedPath       = null;
                     mutualBlockTimer = 0;
                 }
-
-                // Si on est bloqué, on réagit plus vite (3 au lieu de 5)
-                if (++stuckCounter > 3) {
+                if (++stuckCounter > 5) {
+                    if (isDebug) System.out.println("   -> Agent bloqueur persistant : tryRandomStep !");
                     stuckCounter = 0;
                     blockedCell  = null;
-
-                    // --- LA MAGIE EST ICI : LE MUR TEMPORAIRE ---
-                    // On récupère la carte, et on transforme le collègue en mur !
-                    boolean[][] dynamicObs = buildStaticObstacleMap();
-                    dynamicObs[nextX][nextY] = true;
-
-                    // On demande à A* de trouver une route qui CONTOURNE ce mur temporaire
-                    cachedPath = PathFinder.aStar(
-                            new int[]{getX(), getY()},
-                            new int[]{targetX, targetY},
-                            rows, columns, dynamicObs, null);
-                    cachedPathIndex = 0;
-
-                    // Si la destination est vraiment bloquée de partout, on fait un pas de côté
-                    if (cachedPath == null || cachedPath.length == 0) {
-                        tryRandomStep(buildStaticObstacleMap());
-                        cachedPath = null; // Indispensable pour réinitialiser le GPS !
-                    }
+                    tryRandomStep(buildStaticObstacleMap());
                 }
                 return;
             }
         }
 
-        if (freeForward()) {
-            stuckCounter     = 0;
-            mutualBlockTimer = 0;
-            blockedCell      = null;
-            cachedPathIndex++;
-            moveForward();
-        } else {
-            // Le robot n'a pas pu avancer physiquement
-            stuckCounter++;
-            if (stuckCounter > 5) {
-                stuckCounter = 0;
-                tryRandomStep(buildStaticObstacleMap());
-            }
-        }
+        if (isDebug) System.out.println("   -> Voie libre. Execution de moveForward().");
+
+        stuckCounter     = 0;
+        mutualBlockTimer = 0;
+        blockedCell      = null;
+        cachedPathIndex++;
+        moveForward();
     }
 
 
@@ -918,9 +913,15 @@ public class MyRobot extends ColorInteractionRobot {
         // Consommation de batterie lors des déplacements
         // Consommation de batterie
         boolean isWaitingForCharge = (etat == Etat.MOVING_TO_CHARGE && !hasChargePriority());
+        boolean isOnRechargeZone = false;
+        for (int[] r : rechargePositions) {
+            if (r[0] == getX() && r[1] == getY()) {
+                isOnRechargeZone = true; break;
+            }
+        }
 
         if ((etat == Etat.MOVING_TO_PACKAGE || etat == Etat.TRANSPORT_TO_GOAL || etat == Etat.MOVING_TO_CHARGE)
-                && !isWaitingForCharge) {
+                && !isWaitingForCharge && !isOnRechargeZone) {
             chargeLevel = Math.max(0, chargeLevel - CHARGE_COST);
         }
 

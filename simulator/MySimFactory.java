@@ -317,7 +317,6 @@ public class MySimFactory extends SimFactory {
     private void printLiveDashboard(List<Robot> robots, int step) {
         long elapsed = System.currentTimeMillis() - simStartTime;
         StringBuilder sb = new StringBuilder();
-        sb.append(CLEAR);
 
         final int W = 60;
         String sep = BOLD + "═".repeat(W) + RESET;
@@ -418,7 +417,6 @@ public class MySimFactory extends SimFactory {
 
         sb.append("\n").append(sep).append("\n");
         System.out.print(sb);
-        System.out.flush();
     }
 
     // ------------------------------------------------------------------ //
