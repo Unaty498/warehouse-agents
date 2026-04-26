@@ -38,6 +38,7 @@ public class MySimFactory extends SimFactory {
     /** Nombre total de colis injectés dans les zones de départ depuis le début. */
     private int totalGenerated = 0;
     private long simStartTime;
+    public boolean fastMode = false;
 
     // ── Constantes ANSI ──────────────────────────────────────────────── //
     private static final String RESET  = "\033[0m";
@@ -271,6 +272,11 @@ public class MySimFactory extends SimFactory {
         List<Robot> robots = environment.getRobot();
         simStartTime = System.currentTimeMillis();
 
+        if (fastMode) {
+            System.out.println("\n🚀 Démarrage de la simulation en mode RAPIDE...");
+            System.out.print("Calcul en cours ");
+        }
+
         for (int i = 0; i < sp.step; i++) {
             totalSteps++;
 
@@ -286,24 +292,38 @@ public class MySimFactory extends SimFactory {
                 updateEnvironment(prevPos, r.getLocation());
             }
 
-            // Distribution en fin de cycle (contrainte du modèle : synchrone)
-            // Les messages du cycle N sont reçus au cycle N+1.
+            // Distribution en fin de cycle
             distributeMessages(robots);
 
-            printLiveDashboard(robots, totalSteps);
-            refreshGW();
+            // --- GESTION DU MODE ---
+            if (fastMode) {
+                // Mode rapide : pas de pause, juste un point de chargement dans la console
+                if (totalSteps % 50 == 0) {
+                    System.out.print(".");
+                }
+            } else {
+                // Mise à jour de la vue 2D
+                refreshGW();
 
-            if (MySimFactory.deliveredCount >= nbPackages) {
-                break;
+                // Mode visuel : affichage complet et ralenti
+                printLiveDashboard(robots, totalSteps);
+                try {
+                    Thread.sleep(sp.waittime);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
             }
 
-            try {
-                Thread.sleep(sp.waittime);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
+            // Condition de victoire
+            if (MySimFactory.deliveredCount >= nbPackages) {
+                if (fastMode) System.out.println(" Objectif de livraison atteint !");
+                break;
             }
         }
 
+        if (fastMode) System.out.println("\n✅ Simulation terminée.");
+
+        // Rapport final affiché dans les deux modes
         printStatistics(robots);
     }
 
@@ -517,6 +537,8 @@ public class MySimFactory extends SimFactory {
         sim.numberOfWorkers       = sp.nbobstacle / 2;
         sim.rnd                   = new Random(sp.seed);
 
+        sim.fastMode = true;
+
 
         sim.createEnvironment();
         sim.createObstacle();
@@ -529,7 +551,9 @@ public class MySimFactory extends SimFactory {
 
         sim.loadRechargeZones(ifileEnv);
 
-        sim.initializeGW();
+        if (!sim.fastMode) {
+            sim.initializeGW();
+        }
         sim.schedule();
     }
 }
