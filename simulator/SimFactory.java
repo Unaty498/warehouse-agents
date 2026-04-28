@@ -8,7 +8,6 @@ import fr.emse.fayol.maqit.simulator.display.GraphicalWindow;
 
 /**
  * A class to define the core of the simulator
- * test
  */
 public abstract class SimFactory {
 

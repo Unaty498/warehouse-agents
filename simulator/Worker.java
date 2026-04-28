@@ -26,16 +26,16 @@ public class Worker extends ColorInteractionRobot {
         for (int i = 0; i < step; i++) {
             if (freeForward()) {
                 moveForward();
-            }else {
-            	randomOrientation();            }
+            } else {
+                randomOrientation();
+            }
         }
     }
 
-	@Override
-	public void handleMessage(Message msg) {
-		// TODO Auto-generated method stub
-		
-	}
+    @Override
+    public void handleMessage(Message msg) {
+        // Pas de gestion de message pour Worker
+    }
 
     @Override
     public void step() {

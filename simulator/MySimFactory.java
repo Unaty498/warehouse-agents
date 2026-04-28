@@ -27,18 +27,20 @@ public class MySimFactory extends SimFactory {
     /** Positions des stations de recharge chargées depuis environment.ini */
     private final List<int[]> rechargePositions = new ArrayList<>();
 
-    public static int deliveredCount = 0;
-    /** Compteur de livraisons par goal (goalId → nb livrés). */
-    public static final Map<Integer, Integer> deliveredPerGoal = new HashMap<>();
+        private int deliveredCount = 0;
+        /** Compteur de livraisons par goal (goalId → nb livrés). */
+        private final Map<Integer, Integer> deliveredPerGoal = new HashMap<>();
 
     int nbPackages;
-    int numberOfWorkers;
-    Random rnd;
+    int nbNotGeneratedPackages;
+    public int numberOfWorkers;
+    public Random rnd;
     int totalSteps    = 0;
     /** Nombre total de colis injectés dans les zones de départ depuis le début. */
     private int totalGenerated = 0;
     private long simStartTime;
     public boolean fastMode = false;
+    public boolean testMode = false;
 
     // ── Constantes ANSI ──────────────────────────────────────────────── //
     private static final String RESET  = "\033[0m";
@@ -53,6 +55,29 @@ public class MySimFactory extends SimFactory {
 
     public MySimFactory(SimProperties sp) {
         super(sp);
+    }
+
+
+    public void setNbPackages(int nbPackages) {
+        this.nbPackages = nbPackages;
+        this.nbNotGeneratedPackages = nbPackages;
+        this.deliveredCount = 0;
+        this.deliveredPerGoal.clear();
+    }
+    public int getDeliveredCount() {
+        return deliveredCount;
+    }
+
+    public Map<Integer, Integer> getDeliveredPerGoal() {
+        return deliveredPerGoal;
+    }
+
+    public int getNbPackages() {
+        return nbPackages;
+    }
+
+    public int getTotalSteps() {
+        return totalSteps;
     }
 
     // ------------------------------------------------------------------ //
@@ -99,30 +124,35 @@ public class MySimFactory extends SimFactory {
     // ------------------------------------------------------------------ //
     //  Paquets
     // ------------------------------------------------------------------ //
-    public void createPackages() {
-        // Ne pas générer plus de paquets que l'objectif total
-        if (totalGenerated >= nbPackages) return;
-
+    /**
+     * Génère n paquets et les répartit aléatoirement sur les zones de départ.
+     */
+    public void createPackages(int n) {
         String[] startZones = {"A1", "A2", "A3"};
-        for (String s : startZones) {
+        for (int i = 0; i < n; i++) {
             if (totalGenerated >= nbPackages) break;
             int destinationId = rnd.nextInt(2) + 1;
+            int ts = 0;
+            int randomStartZone = rnd.nextInt(startZones.length);
+            String zone = startZones[randomStartZone];
             int[] position = {-1, -1};
             ColorPackage pack = new ColorPackage(
-                    position,
-                    new int[]{
-                            sp.colorpackage.getRed(),
-                            sp.colorpackage.getGreen(),
-                            sp.colorpackage.getBlue()
-                    },
-                    destinationId, 0, s
+                position,
+                new int[]{
+                    sp.colorpackage.getRed(),
+                    sp.colorpackage.getGreen(),
+                    sp.colorpackage.getBlue()
+                },
+                destinationId,
+                ts,
+                zone
             );
-            ColorStartZone startZone = getStartZoneById(s);
+            ColorStartZone startZone = getStartZoneById(zone);
             if (startZone != null) {
                 startZone.addPackage(pack);
                 totalGenerated++;
             } else {
-                System.out.println("Zone de départ introuvable : " + s);
+                System.out.println("Zone de départ introuvable : " + zone);
             }
         }
     }
@@ -241,10 +271,15 @@ public class MySimFactory extends SimFactory {
                 startZonesMap,
                 transitZonesMap,
                 sp.goalPositions,
-                rechargePositions
+                rechargePositions,
+                this
             );
             addNewComponent(robot);
         }
+    }
+    public synchronized void incrDelivered(int goalId) {
+        deliveredCount++;
+        deliveredPerGoal.merge(goalId, 1, Integer::sum);
     }
 
     // ------------------------------------------------------------------ //
@@ -273,15 +308,23 @@ public class MySimFactory extends SimFactory {
         simStartTime = System.currentTimeMillis();
 
         if (fastMode) {
-            System.out.println("\n🚀 Démarrage de la simulation en mode RAPIDE...");
+            System.out.println("\nDémarrage de la simulation en mode RAPIDE...");
             System.out.print("Calcul en cours ");
         }
 
         for (int i = 0; i < sp.step; i++) {
             totalSteps++;
 
-            // Génération de paquets (1 cycle sur 2)
-            if (validGeneration()) createPackages();
+            // Génération de paquets par lots (tous les 10 pas)
+            if (nbNotGeneratedPackages > 0 && validGeneration()) {
+                int currentNBPacket;
+                if (nbNotGeneratedPackages > 2)
+                    currentNBPacket = rnd.nextInt(nbNotGeneratedPackages / 2 + 1);
+                else
+                    currentNBPacket = 2;
+                createPackages(currentNBPacket);
+                nbNotGeneratedPackages -= currentNBPacket;
+            }
 
             // Activation des robots
             for (Robot r : robots) {
@@ -297,15 +340,11 @@ public class MySimFactory extends SimFactory {
 
             // --- GESTION DU MODE ---
             if (fastMode) {
-                // Mode rapide : pas de pause, juste un point de chargement dans la console
                 if (totalSteps % 50 == 0) {
                     System.out.print(".");
                 }
             } else {
-                // Mise à jour de la vue 2D
                 refreshGW();
-
-                // Mode visuel : affichage complet et ralenti
                 printLiveDashboard(robots, totalSteps);
                 try {
                     Thread.sleep(sp.waittime);
@@ -315,7 +354,7 @@ public class MySimFactory extends SimFactory {
             }
 
             // Condition de victoire
-            if (MySimFactory.deliveredCount >= nbPackages) {
+            if (deliveredCount >= nbPackages) {
                 if (fastMode) System.out.println(" Objectif de livraison atteint !");
                 break;
             }
@@ -355,7 +394,7 @@ public class MySimFactory extends SimFactory {
         double pct = 100.0 * deliveredCount / Math.max(nbPackages, 1);
         int filled = (int)(20.0 * deliveredCount / Math.max(nbPackages, 1));
         String bar = GREEN + "█".repeat(filled) + RESET + "░".repeat(20 - filled);
-        sb.append(String.format("  Livrés : %d / %d  [%s]  %.1f %%%n",
+        sb.append(String.format("  Livrés : %d / %d  [%s]  %.1f %%\n",
                 deliveredCount, nbPackages, bar, pct));
 
         // ── Zones de départ ───────────────────────────────────────────────
@@ -503,58 +542,6 @@ public class MySimFactory extends SimFactory {
                 "TOTAL", "─".repeat(16), totalDelivered);
 
         System.out.println("\n" + sep + "\n");
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Point d'entrée principal
-    // ------------------------------------------------------------------ //
-    public static void main(String[] args) throws Exception {
-        IniFile ifile    = new IniFile("parameters/configuration.ini");
-        IniFile ifileEnv = new IniFile("parameters/environment.ini");
-
-        SimProperties sp = new SimProperties(ifile);
-        sp.simulationParams();
-        sp.displayParams();
-
-        SimProperties envProp = new SimProperties(ifileEnv);
-        envProp.loadObstaclePositions();
-        envProp.loadStartZonePositions();
-        envProp.loadTransitZones();
-        envProp.loadExitZonePositions();
-        envProp.loadGoalPositions();
-
-        sp.obstaclePositions  = envProp.obstaclePositions;
-        sp.startZonePositions = envProp.startZonePositions;
-        sp.transitZoneData    = envProp.transitZoneData;
-        sp.exitZonePositions  = envProp.exitZonePositions;
-        sp.goalPositions      = envProp.goalPositions;
-
-        System.out.println("Grille : " + sp.rows + "x" + sp.columns);
-        System.out.println("Robots : " + sp.nbrobot);
-
-        MySimFactory sim = new MySimFactory(sp);
-        sim.nbPackages            = sp.nbrobot * 3;   // 3× le nb de robots
-        sim.numberOfWorkers       = sp.nbobstacle / 2;
-        sim.rnd                   = new Random(sp.seed);
-
-        sim.fastMode = true;
-
-
-        sim.createEnvironment();
-        sim.createObstacle();
-        sim.createGoal();
-        sim.createStartZones();
-        sim.createTransitZones();
-        sim.createExitZones();
-        sim.createWorker();
-        sim.createRobot();
-
-        sim.loadRechargeZones(ifileEnv);
-
-        if (!sim.fastMode) {
-            sim.initializeGW();
-        }
-        sim.schedule();
     }
 }
 

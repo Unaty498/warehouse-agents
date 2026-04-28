@@ -147,12 +147,15 @@ public class MyRobot extends ColorInteractionRobot {
     // ================================================================== //
     //  Constructeur
     // ================================================================== //
+    private final MySimFactory myFactory;
+
     public MyRobot(String name, int field, int debug, int[] pos, Color color,
                    int rows, int columns, ColorGridEnvironment env, long seed,
                    Map<String, ColorStartZone>   startZonesMap,
                    Map<String, ColorTransitZone> transitZonesMap,
                    Map<Integer, int[]>           goalPositions,
-                   List<int[]>                   rechargePositions) {
+                   List<int[]>                   rechargePositions,
+                   MySimFactory myFactory) {
         super(name, field, debug, pos, color, rows, columns, seed);
         this.env               = env;
         this.etat              = Etat.IDLE;
@@ -162,6 +165,7 @@ public class MyRobot extends ColorInteractionRobot {
         this.transitZonesMap   = transitZonesMap;
         this.goalPositions     = goalPositions;
         this.rechargePositions = rechargePositions;
+        this.myFactory         = myFactory;
         randomOrientation();
     }
 
@@ -395,29 +399,14 @@ public class MyRobot extends ColorInteractionRobot {
     protected void moveOneStepTo(int targetX, int targetY) {
         if (isAt(targetX, targetY)) { cachedPath = null; return; }
 
-        // --- INJECTION DEBUG ---
-        boolean isOnRechargeZone = false;
-        for (int[] r : rechargePositions) {
-            if (r[0] == getX() && r[1] == getY()) {
-                isOnRechargeZone = true; break;
-            }
-        }
-        boolean isDebug = ((etat == Etat.MOVING_TO_PACKAGE || chargeLevel == 100) && isOnRechargeZone);
-
-        if (isDebug) {
-            System.out.println("\n[DEBUG] " + getName() + " (Bat:" + chargeLevel + "%) est SUR UNE STATION. Cible : (" + targetX + "," + targetY + ")");
-            System.out.println("   -> cachedPath actuel : " + (cachedPath == null ? "NULL" : "Valide (idx: " + cachedPathIndex + "/" + cachedPath.length + ")"));
-        }
         // -----------------------
 
         if (oscillationWaitCounter > 0) {
-            if (isDebug) System.out.println("   -> Bloqué par oscillationWaitCounter");
             oscillationWaitCounter--;
             return;
         }
 
         if (targetX != lastTargetX || targetY != lastTargetY) {
-            if (isDebug) System.out.println("   -> Invalidation du chemin (changement de cible)");
             cachedPath = null;
             lastTargetX = targetX;
             lastTargetY = targetY;
@@ -426,12 +415,10 @@ public class MyRobot extends ColorInteractionRobot {
         if (cachedPath != null && (cachedPathIndex >= cachedPath.length
                 || cachedPath[cachedPathIndex][0] != getX()
                 || cachedPath[cachedPathIndex][1] != getY())) {
-            if (isDebug) System.out.println("   -> Invalidation du chemin (désynchronisation GPS/Physique)");
             cachedPath = null;
         }
 
         if (cachedPath == null) {
-            if (isDebug) System.out.println("   -> Lancement du PathFinder A*...");
             boolean[][] obs = buildStaticObstacleMap();
             List<int[]> extra = (blockedCell != null) ? Collections.singletonList(blockedCell) : null;
 
@@ -446,7 +433,6 @@ public class MyRobot extends ColorInteractionRobot {
                         adjList.add(new int[]{nx, ny});
                 }
                 if (adjList.isEmpty()) {
-                    if (isDebug) System.out.println("   -> ERREUR : La cible est un obstacle et n'a aucune case adjacente libre !");
                     return;
                 }
                 cachedPath = PathFinder.aStarToAny(
@@ -460,18 +446,11 @@ public class MyRobot extends ColorInteractionRobot {
                         rows, columns, obs, extra);
             }
             cachedPathIndex = 0;
-
-            if (isDebug) {
-                if (cachedPath == null) System.out.println("   -> A* a retourné NULL ! Le robot est emmuré vivant pour l'algorithme.");
-                else System.out.println("   -> A* a trouvé un chemin de " + cachedPath.length + " pas.");
-            }
         }
 
         if (cachedPath == null || cachedPath.length < 2 || cachedPathIndex + 1 >= cachedPath.length) {
-            if (isDebug) System.out.println("   -> Chemin inutilisable. Increment stuckCounter: " + (stuckCounter + 1));
             cachedPath = null;
             if (++stuckCounter > 3) {
-                if (isDebug) System.out.println("   -> stuckCounter > 3 : Tentative de tryRandomStep !");
                 stuckCounter  = 0;
                 blockedCell   = null;
                 tryRandomStep(buildStaticObstacleMap());
@@ -481,8 +460,6 @@ public class MyRobot extends ColorInteractionRobot {
 
         int nextX = cachedPath[cachedPathIndex + 1][0];
         int nextY = cachedPath[cachedPathIndex + 1][1];
-
-        if (isDebug) System.out.println("   -> Le prochain pas demandé est : (" + nextX + "," + nextY + ")");
 
         // Orientation
         int dx = nextX - getX(), dy = nextY - getY();
@@ -497,18 +474,14 @@ public class MyRobot extends ColorInteractionRobot {
             SituatedComponent comp = nextCell.getContent();
             boolean isAgent = (comp instanceof Robot) || comp.getClass().getSimpleName().contains("Worker");
 
-            if (isDebug) System.out.println("   -> OBSTACLE DÉTECTÉ sur le prochain pas : " + comp.getClass().getSimpleName() + " (isAgent=" + isAgent + ")");
-
             if (isAgent) {
                 blockedCell = new int[]{nextX, nextY};
                 mutualBlockTimer++;
                 if (mutualBlockTimer >= MUTUAL_BLOCK_THRESHOLD) {
-                    if (isDebug) System.out.println("   -> mutualBlockTimer atteint : invalidation du chemin.");
                     cachedPath       = null;
                     mutualBlockTimer = 0;
                 }
                 if (++stuckCounter > 5) {
-                    if (isDebug) System.out.println("   -> Agent bloqueur persistant : tryRandomStep !");
                     stuckCounter = 0;
                     blockedCell  = null;
                     tryRandomStep(buildStaticObstacleMap());
@@ -516,8 +489,6 @@ public class MyRobot extends ColorInteractionRobot {
                 return;
             }
         }
-
-        if (isDebug) System.out.println("   -> Voie libre. Execution de moveForward().");
 
         stuckCounter     = 0;
         mutualBlockTimer = 0;
@@ -862,8 +833,7 @@ public class MyRobot extends ColorInteractionRobot {
                 if (carriedPackage != null) {
                     carriedPackage.setState(PackageState.ARRIVED);
                     deliveredByThisRobot++;
-                    MySimFactory.deliveredCount++;
-                    MySimFactory.deliveredPerGoal.merge(targetGoalId, 1, Integer::sum);
+                    myFactory.incrDelivered(targetGoalId);
                     carriedPackage = null;
                 }
                 cachedPath = null;
