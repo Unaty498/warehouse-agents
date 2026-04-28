@@ -275,19 +275,6 @@ public class MyRobot extends ColorInteractionRobot {
         return best; // Renverra null si tout est saturé !
     }
 
-    private boolean isPhysicallyFree(int[] pos) {
-        Cell c = env.getGrid()[pos[0]][pos[1]];
-        boolean physicallyFree = true;
-
-        // Si la case contient quelque chose, on vérifie si c'est un agent
-        if (c != null && c.getContent() != null) {
-            SituatedComponent comp = c.getContent();
-            if (comp instanceof Robot || comp.getClass().getSimpleName().contains("Worker")) {
-                physicallyFree = false; // Un robot bloque la place
-            }
-        }
-        return physicallyFree;
-    }
 
     // ================================================================== //
     //  Carte d'obstacles pour A*
@@ -682,10 +669,7 @@ public class MyRobot extends ColorInteractionRobot {
         // ---- Cas 4 : recharge -----------------------------------------------
         // Si aucune mission n'est réalisable (cas 1/2/3 ont échoué) ET que la
         // batterie n'est pas pleine, on recharge.
-        // Bug 2 corrigé : l'ancien seuil fixe à 80 % bloquait les robots dont
-        // la batterie était entre 80 % et MAX_CHARGE sans mission disponible.
-        // Désormais, tout robot inactif avec batterie < MAX_CHARGE va recharger.
-        if (chargeLevel < MAX_CHARGE * 0.8) {
+        if (chargeLevel < MAX_CHARGE) {
             int[] r = findBestAvailableRechargePosition();
             if (r != null) { // Oh, une place s'est libérée !
                 destX = r[0]; destY = r[1];
@@ -698,7 +682,7 @@ public class MyRobot extends ColorInteractionRobot {
         } else {
             boolean onStation = false;
             for (int[] pos : rechargePositions) {
-                if (isAt(pos[0], pos[1])) {
+                if (Math.abs(getX() - pos[0]) + Math.abs(getY() - pos[1]) <= 2) {
                     onStation = true;
                     break;
                 }
@@ -718,6 +702,28 @@ public class MyRobot extends ColorInteractionRobot {
 
                 // Le robot fait un pas pour descendre de la station !
                 tryRandomStep(escapeObs);
+                return;
+            }
+
+            boolean nearExit = goalPositions.values().stream()
+                    .anyMatch(gp -> distanceManhattan(getX(), getY(), gp[0], gp[1]) <= 2);
+            if (nearExit) {
+                // Si on est près d'une sortie, on fait un pas aléatoire pour éviter de bloquer l'accès
+                tryRandomStep(buildStaticObstacleMap());
+            }
+
+            boolean nearTransit = transitZonesMap.values().stream()
+                    .anyMatch(tz -> distanceManhattan(getX(), getY(), tz.getX(), tz.getY()) <= 2);
+            if (nearTransit) {
+                // Si on est près d'un transit, on fait un pas aléatoire pour éviter de bloquer l'accès
+                tryRandomStep(buildStaticObstacleMap());
+            }
+
+            boolean nearStart = startZonesMap.values().stream()
+                    .anyMatch(ssz -> distanceManhattan(getX(), getY(), ssz.getX(), ssz.getY()) <= 2);
+            if (nearStart) {
+                // Si on est près d'une zone de départ, on fait un pas aléatoire pour éviter de bloquer l'accès
+                tryRandomStep(buildStaticObstacleMap());
             }
         }
     }
@@ -838,6 +844,20 @@ public class MyRobot extends ColorInteractionRobot {
 
     /** MOVING_TO_CHARGE : se déplace jusqu'à la station ; redirige si occupée. */
     private void handleMovingToCharge() {
+
+        // Si on est au-dessus de 80%de batterie, on peut repasser en IDLE pour chercher une mission au lieu de rester bloqué à attendre.
+
+        int chargeDestX = destX, chargeDestY = destY;
+
+
+        if (chargeLevel >= MAX_CHARGE * 0.8 && !isAt(chargeDestX, chargeDestY)) {
+            handleIdle();
+        }
+        if (etat != Etat.MOVING_TO_CHARGE) {
+            broadcast("RELEASE_CHARGE:" + chargeDestX + "," + chargeDestY + ":" + getId());
+            return; // handleIdle a trouvé une mission, on ne continue pas vers la station
+        }
+
         if (isAt(destX, destY)) {
             cachedPath = null;
             etat = Etat.CHARGING;
@@ -925,13 +945,18 @@ public class MyRobot extends ColorInteractionRobot {
                 ? distanceManhattan(getX(), getY(), closestCharge[0], closestCharge[1])
                 : 0;
 
-        // Seuil d'urgence : la distance réelle + marge pour les détours A*
         int dynamicEmergencyThreshold = distToCharge + 15;
+
+        // EXCEPTION : Si je porte un colis et que l'arrivée est plus proche que le chargeur,
+        // je serre les dents et je finis ma livraison d'abord !
+        boolean finishDeliveryFirst = (etat == Etat.TRANSPORT_TO_GOAL
+                && distanceManhattan(getX(), getY(), destX, destY) <= distToCharge);
 
         // Urgence : batterie critique → aller recharger immédiatement
         if (chargeLevel <= dynamicEmergencyThreshold
                 && etat != Etat.CHARGING
-                && etat != Etat.MOVING_TO_CHARGE) {
+                && etat != Etat.MOVING_TO_CHARGE
+                && !finishDeliveryFirst) { // <--- AJOUT DE LA CONDITION ICI
 
             // 1. GESTION DU COLIS (On le garde dans les mains !)
             if (carriedPackage != null && targetDestIsTransit && targetDestTransitId != null) {

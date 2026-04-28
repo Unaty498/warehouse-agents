@@ -99,7 +99,8 @@ public class MySimFactory extends SimFactory {
     // ------------------------------------------------------------------ //
     @Override
     public void createObstacle() {
-        for (int i = 0; i < sp.nbobstacle; i++) {
+        int maxObstacles = Math.min(sp.nbobstacle, sp.obstaclePositions.length);
+        for (int i = 0; i < maxObstacles; i++) {
             int[] pos = sp.obstaclePositions[i];
             ColorObstacle obstacle = new ColorObstacle(pos, new int[]{
                 sp.colorobstacle.getRed(),

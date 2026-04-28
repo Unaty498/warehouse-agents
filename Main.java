@@ -36,106 +36,117 @@ public class Main {
             }
         }
         if (testMode) {
-            // Paramètres à tester (exemple : nombre de robots et d'obstacles)
-            int[] robotsRange = {6, 8, 10, 12}; // à adapter selon besoin
-            int[] obstaclesRange = {2, 4, 6, 8};
-            int seedsPerCombo = 100;
-            double[][][] results = new double[robotsRange.length][obstaclesRange.length][4]; // [efficacité, durée, idle_ratio, recharge_utilization]
-            ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
-            try {
-                for (int i = 0; i < robotsRange.length; i++) {
-                    for (int j = 0; j < obstaclesRange.length; j++) {
-                        int robots = robotsRange[i];
-                        int obstacles = obstaclesRange[j];
-                        java.util.List<Future<double[]>> futures = new java.util.ArrayList<>();
-                        for (int s = 0; s < seedsPerCombo; s++) {
-                            final int testSeed = (int) (System.currentTimeMillis() + s * 1000 + i * 100 + j * 10);
-                            futures.add(executor.submit(() -> {
-                                IniFile ifile    = new IniFile("parameters/configuration.ini");
-                                IniFile ifileEnv = new IniFile("parameters/environment.ini");
-                                SimProperties sp = new SimProperties(ifile);
-                                sp.simulationParams();
-                                sp.displayParams();
-                                SimProperties envProp = new SimProperties(ifileEnv);
-                                envProp.loadObstaclePositions();
-                                envProp.loadStartZonePositions();
-                                envProp.loadTransitZones();
-                                envProp.loadExitZonePositions();
-                                envProp.loadGoalPositions();
-                                sp.nbobstacle = obstacles;
-                                sp.obstaclePositions  = envProp.obstaclePositions;
-                                sp.startZonePositions = envProp.startZonePositions;
-                                sp.transitZoneData    = envProp.transitZoneData;
-                                sp.exitZonePositions  = envProp.exitZonePositions;
-                                sp.goalPositions      = envProp.goalPositions;
-                                sp.nbrobot = robots;
-                                sp.seed = testSeed;
-                                MySimFactory sim = new MySimFactory(sp);
-                                sim.setNbPackages(sp.nbrobot * 3);
-                                sim.numberOfWorkers = sp.nbobstacle / 2;
-                                sim.rnd = new Random(sp.seed);
-                                sim.fastMode = true;
-                                sim.testMode = true;
-                                sim.createEnvironment();
-                                sim.createObstacle();
-                                sim.createGoal();
-                                sim.createStartZones();
-                                sim.createTransitZones();
-                                sim.createExitZones();
-                                sim.createWorker();
-                                sim.createRobot();
-                                sim.loadRechargeZones(ifileEnv);
-                                long start = System.currentTimeMillis();
-                                sim.schedule();
-                                long duration = System.currentTimeMillis() - start;
-                                int delivered = sim.getDeliveredCount();
-                                int steps = sim.getTotalSteps();
-                                double efficiency = (steps > 0) ? ((double) delivered / steps) : 0.0;
-                                double idleRatio = sim.getAverageIdleRatio();
-                                double rechargeUtil = sim.getRechargeUtilization();
-                                return new double[]{efficiency, duration / 1000.0, idleRatio, rechargeUtil};
-                            }));
+            int[] robotsRange = {6, 8, 10, 12};
+            int[] obstaclesRange = {1, 3, 5, 7};
+            int seedsPerCombo = 20;
+            double[][][] results = new double[robotsRange.length][obstaclesRange.length][4];
+
+            for (int i = 0; i < robotsRange.length; i++) {
+                for (int j = 0; j < obstaclesRange.length; j++) {
+                    int robots = robotsRange[i];
+                    int obstacles = obstaclesRange[j];
+
+                    double sumEfficiency = 0;
+                    double sumDuration = 0;
+                    double sumIdleRatio = 0;
+                    double sumRechargeUtil = 0;
+
+                    System.out.printf("\n[Test] Robots: %d, Obstacles: %d (%d graines)\n", robots, obstacles, seedsPerCombo);
+
+                    for (int s = 0; s < seedsPerCombo; s++) {
+                        final int testSeed = (int) (System.currentTimeMillis() + s * 1000 + i * 100 + j * 10);
+
+                        try {
+                            IniFile ifile    = new IniFile("parameters/configuration.ini");
+                            IniFile ifileEnv = new IniFile("parameters/environment.ini");
+                            SimProperties sp = new SimProperties(ifile);
+                            sp.simulationParams();
+                            // sp.displayParams(); // Optionnel : encombre la console en test séquentiel
+                            SimProperties envProp = new SimProperties(ifileEnv);
+                            envProp.loadObstaclePositions();
+                            envProp.loadStartZonePositions();
+                            envProp.loadTransitZones();
+                            envProp.loadExitZonePositions();
+                            envProp.loadGoalPositions();
+
+                            sp.obstaclePositions  = envProp.obstaclePositions;
+                            sp.startZonePositions = envProp.startZonePositions;
+                            sp.transitZoneData    = envProp.transitZoneData;
+                            sp.exitZonePositions  = envProp.exitZonePositions;
+                            sp.goalPositions      = envProp.goalPositions;
+                            sp.nbrobot = robots;
+                            sp.nbobstacle = obstacles;
+                            sp.seed = testSeed;
+
+                            if (sp.colorobstacle == null) sp.colorobstacle = java.awt.Color.DARK_GRAY;
+                            if (sp.colorgoal == null) sp.colorgoal = java.awt.Color.YELLOW;
+                            if (sp.colorpackage == null) sp.colorpackage = java.awt.Color.ORANGE;
+                            if (sp.colorstartzone == null) sp.colorstartzone = java.awt.Color.CYAN;
+                            if (sp.colortransitzone == null) sp.colortransitzone = java.awt.Color.LIGHT_GRAY;
+                            if (sp.colorexit == null) sp.colorexit = java.awt.Color.GREEN;
+                            if (sp.colorrobot == null) sp.colorrobot = java.awt.Color.RED;
+                            if (sp.colorother == null) sp.colorother = java.awt.Color.MAGENTA;
+
+                            MySimFactory sim = new MySimFactory(sp);
+                            sim.setNbPackages(sp.nbrobot * 3);
+                            sim.numberOfWorkers = sp.nbobstacle / 2;
+                            sim.rnd = new Random(sp.seed);
+                            sim.fastMode = true;
+                            sim.testMode = true;
+
+                            sim.createEnvironment();
+                            sim.createObstacle();
+                            sim.createGoal();
+                            sim.createStartZones();
+                            sim.createTransitZones();
+                            sim.createExitZones();
+                            sim.createWorker();
+                            sim.createRobot();
+                            sim.loadRechargeZones(ifileEnv);
+
+                            // /!\ IMPORTANT : Nettoyer l'état global avant chaque run
+                            // si vous avez conservé des champs 'static' dans MyRobot !
+                            // MyRobot.resetGlobalState();
+
+                            long start = System.currentTimeMillis();
+                            sim.schedule();
+                            long duration = System.currentTimeMillis() - start;
+
+                            int delivered = sim.getDeliveredCount();
+                            int steps = sim.getTotalSteps();
+
+                            sumEfficiency += (steps > 0) ? ((double) delivered / steps) : 0.0;
+                            sumDuration += (duration / 1000.0);
+                            sumIdleRatio += sim.getAverageIdleRatio();
+                            sumRechargeUtil += sim.getRechargeUtilization();
+
+                        } catch (Exception e) {
+                            System.err.println("Erreur dans un test : " + e.getMessage());
                         }
-                        double sumEfficiency = 0;
-                        double sumDuration = 0;
-                        double sumIdleRatio = 0;
-                        double sumRechargeUtil = 0;
-                        for (Future<double[]> f : futures) {
-                            try {
-                                double[] res = f.get();
-                                sumEfficiency += res[0];
-                                sumDuration += res[1];
-                                sumIdleRatio += res[2];
-                                sumRechargeUtil += res[3];
-                            } catch (Exception e) {
-                                System.err.println("Erreur dans un test : " + e.getMessage());
-                            }
-                        }
-                        results[i][j][0] = sumEfficiency / seedsPerCombo;
-                        results[i][j][1] = sumDuration / seedsPerCombo;
-                        results[i][j][2] = sumIdleRatio / seedsPerCombo;
-                        results[i][j][3] = sumRechargeUtil / seedsPerCombo;
                     }
+
+                    results[i][j][0] = sumEfficiency / seedsPerCombo;
+                    results[i][j][1] = sumDuration / seedsPerCombo;
+                    results[i][j][2] = sumIdleRatio / seedsPerCombo;
+                    results[i][j][3] = sumRechargeUtil / seedsPerCombo;
                 }
-            } finally {
-                executor.shutdown();
-                executor.awaitTermination(1, TimeUnit.HOURS);
             }
-            // Affichage du tableau de résultats
+
+            // --- Affichage et Export CSV ---
             System.out.println("\nRésultats des tests d'efficacité (efficacité = paquets/étape, durée en s) :");
             for (int i = 0; i < robotsRange.length; i++) {
                 for (int j = 0; j < obstaclesRange.length; j++) {
                     System.out.printf("Robots: %d, Obstacles: %d => Efficacité: %.3f, Durée: %.2f s\n",
-                        robotsRange[i], obstaclesRange[j], results[i][j][0], results[i][j][1]);
+                            robotsRange[i], obstaclesRange[j], results[i][j][0], results[i][j][1]);
                 }
             }
-            // Export CSV
+
             try (PrintWriter writer = new PrintWriter(new FileWriter("resultats_tests.csv"))) {
                 writer.println("robots;obstacles;efficacite;duree_s;idle_ratio;recharge_utilization");
                 for (int i = 0; i < robotsRange.length; i++) {
                     for (int j = 0; j < obstaclesRange.length; j++) {
-                        writer.printf("%d,%d,%.3f,%.2f,%.4f,%.4f\n",
-                            robotsRange[i], obstaclesRange[j], results[i][j][0], results[i][j][1], results[i][j][2], results[i][j][3]);
+                        writer.printf("%d;%d;%.3f;%.2f;%.4f;%.4f\n",
+                                robotsRange[i], obstaclesRange[j], results[i][j][0], results[i][j][1], results[i][j][2], results[i][j][3]);
                     }
                 }
                 System.out.println("\nFichier CSV généré : resultats_tests.csv");
@@ -163,8 +174,15 @@ public class Main {
         sp.transitZoneData    = envProp.transitZoneData;
         sp.exitZonePositions  = envProp.exitZonePositions;
         sp.goalPositions      = envProp.goalPositions;
-
-        sp.seed = seed;
+        
+        if (sp.colorobstacle == null) sp.colorobstacle = java.awt.Color.DARK_GRAY;
+        if (sp.colorgoal == null) sp.colorgoal = java.awt.Color.YELLOW;
+        if (sp.colorpackage == null) sp.colorpackage = java.awt.Color.ORANGE;
+        if (sp.colorstartzone == null) sp.colorstartzone = java.awt.Color.CYAN;
+        if (sp.colortransitzone == null) sp.colortransitzone = java.awt.Color.LIGHT_GRAY;
+        if (sp.colorexit == null) sp.colorexit = java.awt.Color.GREEN;
+        if (sp.colorrobot == null) sp.colorrobot = java.awt.Color.RED;
+        if (sp.colorother == null) sp.colorother = java.awt.Color.MAGENTA;
 
         System.out.println("Grille : " + sp.rows + "x" + sp.columns);
         System.out.println("Robots : " + sp.nbrobot);
