@@ -40,7 +40,7 @@ public class Main {
             int[] robotsRange = {6, 8, 10, 12}; // à adapter selon besoin
             int[] obstaclesRange = {2, 4, 6, 8};
             int seedsPerCombo = 100;
-            double[][][] results = new double[robotsRange.length][obstaclesRange.length][2]; // [efficacité, durée]
+            double[][][] results = new double[robotsRange.length][obstaclesRange.length][4]; // [efficacité, durée, idle_ratio, recharge_utilization]
             ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
             try {
                 for (int i = 0; i < robotsRange.length; i++) {
@@ -62,13 +62,13 @@ public class Main {
                                 envProp.loadTransitZones();
                                 envProp.loadExitZonePositions();
                                 envProp.loadGoalPositions();
+                                sp.nbobstacle = obstacles;
                                 sp.obstaclePositions  = envProp.obstaclePositions;
                                 sp.startZonePositions = envProp.startZonePositions;
                                 sp.transitZoneData    = envProp.transitZoneData;
                                 sp.exitZonePositions  = envProp.exitZonePositions;
                                 sp.goalPositions      = envProp.goalPositions;
                                 sp.nbrobot = robots;
-                                sp.nbobstacle = obstacles;
                                 sp.seed = testSeed;
                                 MySimFactory sim = new MySimFactory(sp);
                                 sim.setNbPackages(sp.nbrobot * 3);
@@ -91,22 +91,30 @@ public class Main {
                                 int delivered = sim.getDeliveredCount();
                                 int steps = sim.getTotalSteps();
                                 double efficiency = (steps > 0) ? ((double) delivered / steps) : 0.0;
-                                return new double[]{efficiency, duration / 1000.0};
+                                double idleRatio = sim.getAverageIdleRatio();
+                                double rechargeUtil = sim.getRechargeUtilization();
+                                return new double[]{efficiency, duration / 1000.0, idleRatio, rechargeUtil};
                             }));
                         }
                         double sumEfficiency = 0;
                         double sumDuration = 0;
+                        double sumIdleRatio = 0;
+                        double sumRechargeUtil = 0;
                         for (Future<double[]> f : futures) {
                             try {
                                 double[] res = f.get();
                                 sumEfficiency += res[0];
                                 sumDuration += res[1];
+                                sumIdleRatio += res[2];
+                                sumRechargeUtil += res[3];
                             } catch (Exception e) {
                                 System.err.println("Erreur dans un test : " + e.getMessage());
                             }
                         }
                         results[i][j][0] = sumEfficiency / seedsPerCombo;
                         results[i][j][1] = sumDuration / seedsPerCombo;
+                        results[i][j][2] = sumIdleRatio / seedsPerCombo;
+                        results[i][j][3] = sumRechargeUtil / seedsPerCombo;
                     }
                 }
             } finally {
@@ -123,11 +131,11 @@ public class Main {
             }
             // Export CSV
             try (PrintWriter writer = new PrintWriter(new FileWriter("resultats_tests.csv"))) {
-                writer.println("robots,obstacles,efficacite,duree_s");
+                writer.println("robots;obstacles;efficacite;duree_s;idle_ratio;recharge_utilization");
                 for (int i = 0; i < robotsRange.length; i++) {
                     for (int j = 0; j < obstaclesRange.length; j++) {
-                        writer.printf("%d,%d,%.3f,%.2f\n",
-                            robotsRange[i], obstaclesRange[j], results[i][j][0], results[i][j][1]);
+                        writer.printf("%d,%d,%.3f,%.2f,%.4f,%.4f\n",
+                            robotsRange[i], obstaclesRange[j], results[i][j][0], results[i][j][1], results[i][j][2], results[i][j][3]);
                     }
                 }
                 System.out.println("\nFichier CSV généré : resultats_tests.csv");

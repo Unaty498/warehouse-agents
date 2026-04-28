@@ -21,15 +21,20 @@ import fr.emse.fayol.maqit.simulator.environment.ColorGridEnvironment;
  */
 public class MySimFactory extends SimFactory {
 
+    // Pour le suivi de l’occupation des stations de recharge
+    private int[] rechargeOccupiedSteps = null; // taille = nb de stations
+    private int rechargeTotalSteps = 0;
+
     private final Map<String, ColorStartZone>   startZonesMap  = new HashMap<>();
     private final Map<String, ColorTransitZone> transitZonesMap = new HashMap<>();
 
     /** Positions des stations de recharge chargées depuis environment.ini */
     private final List<int[]> rechargePositions = new ArrayList<>();
 
-        private int deliveredCount = 0;
-        /** Compteur de livraisons par goal (goalId → nb livrés). */
-        private final Map<Integer, Integer> deliveredPerGoal = new HashMap<>();
+    private int deliveredCount = 0;
+
+    /** Compteur de livraisons par goal (goalId → nb livrés). */
+    private final Map<Integer, Integer> deliveredPerGoal = new HashMap<>();
 
     int nbPackages;
     int nbNotGeneratedPackages;
@@ -94,7 +99,8 @@ public class MySimFactory extends SimFactory {
     // ------------------------------------------------------------------ //
     @Override
     public void createObstacle() {
-        for (int[] pos : sp.obstaclePositions) {
+        for (int i = 0; i < sp.nbobstacle; i++) {
+            int[] pos = sp.obstaclePositions[i];
             ColorObstacle obstacle = new ColorObstacle(pos, new int[]{
                 sp.colorobstacle.getRed(),
                 sp.colorobstacle.getGreen(),
@@ -239,6 +245,10 @@ public class MySimFactory extends SimFactory {
             idx++;
         }
 
+        // Initialisation du compteur d’occupation
+        rechargeOccupiedSteps = new int[rechargePositions.size()];
+        rechargeTotalSteps = 0;
+
         System.out.println("Stations de recharge chargées : " + rechargePositions.size());
     }
 
@@ -276,6 +286,7 @@ public class MySimFactory extends SimFactory {
             );
             addNewComponent(robot);
         }
+
     }
     public synchronized void incrDelivered(int goalId) {
         deliveredCount++;
@@ -314,6 +325,22 @@ public class MySimFactory extends SimFactory {
 
         for (int i = 0; i < sp.step; i++) {
             totalSteps++;
+
+            // Comptage occupation des stations de recharge
+            if (rechargeOccupiedSteps != null && !rechargePositions.isEmpty()) {
+                for (int s = 0; s < rechargePositions.size(); s++) {
+                    int[] pos = rechargePositions.get(s);
+                    boolean occupee = false;
+                    for (Robot r : robots) {
+                        if (r.getX() == pos[0] && r.getY() == pos[1]) {
+                            occupee = true;
+                            break;
+                        }
+                    }
+                    if (occupee) rechargeOccupiedSteps[s]++;
+                }
+                rechargeTotalSteps++;
+            }
 
             // Génération de paquets par lots (tous les 10 pas)
             if (nbNotGeneratedPackages > 0 && validGeneration()) {
@@ -368,6 +395,34 @@ public class MySimFactory extends SimFactory {
 
     private boolean validGeneration() {
         return totalSteps % 2 == 0;
+    }
+
+    /**
+     * Retourne le taux d’utilisation global des stations de recharge (0..1)
+     * = somme des occupations / (nb de stations × nb de cycles)
+     */
+    public double getRechargeUtilization() {
+        if (rechargeOccupiedSteps == null || rechargeTotalSteps == 0 || rechargeOccupiedSteps.length == 0) return 0.0;
+        int sum = 0;
+        for (int occ : rechargeOccupiedSteps) sum += occ;
+        return (double) sum / (rechargeOccupiedSteps.length * rechargeTotalSteps);
+    }
+
+    /**
+     * Calcule la moyenne du ratio idle des robots (0..1)
+     */
+    public double getAverageIdleRatio() {
+        List<Robot> robots = environment.getRobot();
+        if (robots == null || robots.isEmpty()) return 0.0;
+        double sum = 0.0;
+        int count = 0;
+        for (Robot r : robots) {
+            if (r instanceof simulator.MyRobot mr) {
+                sum += mr.getIdleRatio();
+                count++;
+            }
+        }
+        return count > 0 ? sum / count : 0.0;
     }
 
     // ------------------------------------------------------------------ //

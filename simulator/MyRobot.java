@@ -100,14 +100,6 @@ public class MyRobot extends ColorInteractionRobot {
     /** Compteur de cycles consécutifs sans mouvement (anti-blocage). */
     private int stuckCounter = 0;
 
-    /** Nombre de cycles consécutifs en IDLE sans mission trouvée. */
-    private int idleNoMissionCycles = 0;
-
-    /**
-     * Seuil au-delà duquel les maps de réservation sont purgées pour casser
-     * un éventuel deadlock dû à des réservations périmées.
-     */
-    private static final int IDLE_STALE_THRESHOLD = 20;
 
     /** Nombre de livraisons accomplies par ce robot. **/
     private int deliveredByThisRobot = 0;
@@ -117,7 +109,7 @@ public class MyRobot extends ColorInteractionRobot {
     public String getEtatString() { return etat.name(); }
 
     // ------------------------------------------------------------------ //
-    //  Issue 1 : Cache de chemin A*
+    //  Cache de chemin A*
     // ------------------------------------------------------------------ //
     private int[][] cachedPath      = null;
     private int     cachedPathIndex = 0;
@@ -125,14 +117,14 @@ public class MyRobot extends ColorInteractionRobot {
     private int     lastTargetY     = -1;
 
     // ------------------------------------------------------------------ //
-    //  Issue 2 : Détection d'oscillation
+    //  Détection d'oscillation
     // ------------------------------------------------------------------ //
     private final LinkedList<int[]> positionHistory = new LinkedList<>();
     private static final int  POSITION_HISTORY_SIZE = 6;
     private int               oscillationWaitCounter = 0;
 
     // ------------------------------------------------------------------ //
-    //  Issues 3 & 8 : Cellule bloquante + obstacles temporaires
+    //  Cellule bloquante + obstacles temporaires
     // ------------------------------------------------------------------ //
     private int[] blockedCell              = null;
     private int   mutualBlockTimer         = 0;
@@ -143,6 +135,10 @@ public class MyRobot extends ColorInteractionRobot {
     // ------------------------------------------------------------------ //
     private boolean BlockedStart=false;
     private boolean BlockedTransitPickup=false;
+
+    // Compteurs pour le temps passé en IDLE et le nombre total de cycles
+    private int idleSteps = 0;
+    private int totalSteps = 0;
 
     // ================================================================== //
     //  Constructeur
@@ -513,7 +509,7 @@ public class MyRobot extends ColorInteractionRobot {
         // Préférer la cellule la plus éloignée du bloquant connu
         int[] chosen;
         if (blockedCell != null) {
-            chosen = candidates.getFirst();
+            chosen = candidates.get(0);
             int maxDist = -1;
             for (int[] cand : candidates) {
                 int d = distanceManhattan(cand[0], cand[1], blockedCell[0], blockedCell[1]);
@@ -629,7 +625,6 @@ public class MyRobot extends ColorInteractionRobot {
                     myDepositPriority = Integer.MIN_VALUE;
                     broadcast("RESERVE_START:" + targetSourceId + ":" + getId()
                             + ":" + chargeLevel + ":" + distToStart);
-                    idleNoMissionCycles = 0;
                     return;
                 }
             }
@@ -654,7 +649,6 @@ public class MyRobot extends ColorInteractionRobot {
                             + ":" + chargeLevel + ":" + distToStart);
                     broadcast("RESERVE_DEPOSIT:" + targetDestTransitId + ":" + getId()
                             + ":" + chargeLevel + ":" + distToTransitViaStart);
-                    idleNoMissionCycles = 0;
                     return;
                 }
             }
@@ -680,7 +674,6 @@ public class MyRobot extends ColorInteractionRobot {
                     myDepositPriority = Integer.MIN_VALUE;
                     broadcast("RESERVE_PICKUP:" + targetSourceId + ":" + getId()
                             + ":" + chargeLevel + ":" + distToTransit);
-                    idleNoMissionCycles = 0;
                     return;
                 }
             }
@@ -692,7 +685,6 @@ public class MyRobot extends ColorInteractionRobot {
         // Bug 2 corrigé : l'ancien seuil fixe à 80 % bloquait les robots dont
         // la batterie était entre 80 % et MAX_CHARGE sans mission disponible.
         // Désormais, tout robot inactif avec batterie < MAX_CHARGE va recharger.
-        idleNoMissionCycles++;   // aucune mission n'a été prise ce cycle
         if (chargeLevel < MAX_CHARGE * 0.8) {
             int[] r = findBestAvailableRechargePosition();
             if (r != null) { // Oh, une place s'est libérée !
@@ -738,7 +730,7 @@ public class MyRobot extends ColorInteractionRobot {
             if (!targetSourceIsTransit) {
                 ColorStartZone z = startZonesMap.get(targetSourceId);
                 if (z != null && !z.getPackages().isEmpty()) {
-                    pack = z.getPackages().getFirst();
+                    pack = z.getPackages().get(0);
                     z.removePackage(pack);
                     pack.setState(PackageState.DEPART);
                     carriedPackage = pack;
@@ -747,7 +739,7 @@ public class MyRobot extends ColorInteractionRobot {
             } else {
                 ColorTransitZone z = transitZonesMap.get(targetSourceId);
                 if (z != null && !z.getPackages().isEmpty()) {
-                    pack = z.getPackages().getFirst();
+                    pack = z.getPackages().get(0);
                     z.removePackage(pack);
                     pack.setState(PackageState.TRANSIT);
                     carriedPackage = pack;
@@ -942,17 +934,10 @@ public class MyRobot extends ColorInteractionRobot {
                 && etat != Etat.MOVING_TO_CHARGE) {
 
             // 1. GESTION DU COLIS (On le garde dans les mains !)
-            if (carriedPackage != null) {
-                // On a un colis. On annule juste la réservation de notre point de chute
-                // pour ne pas bloquer une place de transit pendant qu'on charge.
-                if (targetDestIsTransit && targetDestTransitId != null) {
-                    broadcast("RELEASE_DEPOSIT:" + targetDestTransitId + ":" + getId());
-                    robotToTransitDeposit.remove(getId());
-                }
-            } else {
-                // Pas de colis en main (on allait en chercher un), on peut abandonner la mission
-                yieldMission();
+            if (carriedPackage != null && targetDestIsTransit && targetDestTransitId != null) {
+                robotToTransitDeposit.remove(getId());
             }
+            yieldMission();
 
             // 2. RECHERCHE DE STATION
             int[] r = findBestAvailableRechargePosition();
@@ -986,6 +971,10 @@ public class MyRobot extends ColorInteractionRobot {
             case MOVING_TO_CHARGE:  handleMovingToCharge();   break;
             case CHARGING:          handleCharging();         break;
         }
+
+        // Incrémentation des compteurs globaux
+        totalSteps++;
+        if (etat == Etat.IDLE) idleSteps++;
     }
 
     // ================================================================== //
@@ -1135,4 +1124,13 @@ public class MyRobot extends ColorInteractionRobot {
             priMap.put(zoneId, pri);
         }
     }
+
+    /** Nombre de cycles passés en IDLE */
+    public int getIdleSteps() { return idleSteps; }
+
+    /** Nombre total de cycles */
+    public int getTotalSteps() { return totalSteps; }
+
+    /** Ratio idle time */
+    public double getIdleRatio() { return (double) idleSteps / Math.max(1, totalSteps); }
 }
