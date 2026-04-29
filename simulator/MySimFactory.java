@@ -576,6 +576,8 @@ public class MySimFactory extends SimFactory {
                     (double) deliveredCount / totalSteps);
             System.out.printf("  Moy. étapes/paquet  : %.1f étapes%n",
                     (double) totalSteps / deliveredCount);
+            System.out.printf("  Moy. étapes*robot/paquet   : %.1f étapes%n",
+                    (double) totalSteps * robots.size() / deliveredCount);
         }
 
         System.out.println("\n── Par robot ──────────────────────────────────────────");
@@ -596,6 +598,14 @@ public class MySimFactory extends SimFactory {
                 "TOTAL", "─".repeat(16), totalDelivered);
 
         System.out.println("\n" + sep + "\n");
+    }
+
+    public double[] getStats() {
+        double rechargeUtil = getRechargeUtilization();
+        double avgIdleRatio = getAverageIdleRatio();
+        double stepsPerPackage = deliveredCount > 0 ? (double) totalSteps / deliveredCount : 0.0;
+        double robotStepsPerPackage = deliveredCount > 0 ? (double) totalSteps * environment.getRobot().size() / deliveredCount : 0.0;
+        return new double[]{rechargeUtil, avgIdleRatio, stepsPerPackage, robotStepsPerPackage};
     }
 }
 

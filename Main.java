@@ -31,7 +31,7 @@ public class Main {
             int[] robotsRange = {6, 8, 10, 12};
             int[] obstaclesRange = {1, 3, 5, 7};
             int seedsPerCombo = 20;
-            double[][][] results = new double[robotsRange.length][obstaclesRange.length][4];
+            double[][][] results = new double[robotsRange.length][obstaclesRange.length][6];
 
             for (int i = 0; i < robotsRange.length; i++) {
                 for (int j = 0; j < obstaclesRange.length; j++) {
@@ -42,6 +42,8 @@ public class Main {
                     double sumDuration = 0;
                     double sumIdleRatio = 0;
                     double sumRechargeUtil = 0;
+                    double sumSteps = 0;
+                    double sumSingleRobotEfficiency = 0;
 
                     System.out.printf("\n[Test] Robots: %d, Obstacles: %d (%d graines)\n", robots, obstacles, seedsPerCombo);
 
@@ -79,7 +81,7 @@ public class Main {
                             if (sp.colorrobot == null) sp.colorrobot = java.awt.Color.RED;
                             if (sp.colorother == null) sp.colorother = java.awt.Color.MAGENTA;
                             MySimFactory sim = new MySimFactory(sp);
-                            sim.setNbPackages(sp.nbrobot * 3);
+                            sim.setNbPackages(20);
                             sim.numberOfWorkers = sp.nbobstacle / 2;
                             sim.rnd = new Random(sp.seed);
                             sim.fastMode = true;
@@ -99,13 +101,14 @@ public class Main {
                             sim.schedule();
                             long duration = System.currentTimeMillis() - start;
 
-                            int delivered = sim.getDeliveredCount();
-                            int steps = sim.getTotalSteps();
+                            double[] stats = sim.getStats();
 
-                            sumEfficiency += (steps > 0) ? ((double) delivered / steps) : 0.0;
+                            sumEfficiency += stats[3];
+                            sumSingleRobotEfficiency += stats[4];
                             sumDuration += (duration / 1000.0);
-                            sumIdleRatio += sim.getAverageIdleRatio();
-                            sumRechargeUtil += sim.getRechargeUtilization();
+                            sumIdleRatio += stats[1];
+                            sumRechargeUtil += stats[0];
+                            sumSteps += sim.getTotalSteps();
 
                         } catch (Exception e) {
                             System.err.println("Erreur dans un test : " + e.getMessage());
@@ -116,6 +119,8 @@ public class Main {
                     results[i][j][1] = sumDuration / seedsPerCombo;
                     results[i][j][2] = sumIdleRatio / seedsPerCombo;
                     results[i][j][3] = sumRechargeUtil / seedsPerCombo;
+                    results[i][j][4] = sumSteps / seedsPerCombo;
+                    results[i][j][5] = sumSingleRobotEfficiency / seedsPerCombo;
                 }
             }
 
@@ -129,11 +134,11 @@ public class Main {
             }
 
             try (PrintWriter writer = new PrintWriter(new FileWriter("resultats_tests.csv"))) {
-                writer.println("robots;obstacles;efficacite;duree_s;idle_ratio;recharge_utilization");
+                writer.println("robots;obstacles;efficacite;efficacite_unitaire;total_steps;duree_s;idle_ratio;recharge_utilization");
                 for (int i = 0; i < robotsRange.length; i++) {
                     for (int j = 0; j < obstaclesRange.length; j++) {
-                        writer.printf("%d;%d;%.3f;%.2f;%.4f;%.4f\n",
-                                robotsRange[i], obstaclesRange[j], results[i][j][0], results[i][j][1], results[i][j][2], results[i][j][3]);
+                        writer.printf("%d;%d;%.3f;%.3f;%.2f;%.2f;%.4f;%.4f\n",
+                                robotsRange[i], obstaclesRange[j], results[i][j][5], results[i][j][0], results[i][j][4],results[i][j][1], results[i][j][2], results[i][j][3]);
                     }
                 }
                 System.out.println("\nFichier CSV : resultats_tests.csv");
@@ -178,7 +183,7 @@ public class Main {
         System.out.println("Robots : " + sp.nbrobot);
 
         MySimFactory sim = new MySimFactory(sp);
-        sim.setNbPackages(sp.nbrobot * 3);   // 3× le nb de robots
+        sim.setNbPackages(20);   // 3× le nb de robots
         sim.numberOfWorkers       = sp.nbobstacle / 2;
         sim.rnd                   = new Random(sp.seed);
 
