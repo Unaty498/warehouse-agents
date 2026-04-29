@@ -13,7 +13,7 @@ public abstract class SimFactory {
 
     protected SimProperties sp; //!< properties of the simulation
     protected GridEnvironment environment; //!< the discrete environment of the simulation 
-    protected static int idComponent = 1; //!< index of component id (from 1 to +inf) 
+    protected int idComponent = 1; //!< index of component id (from 1 to +inf)
     protected GraphicalWindow gwindow;
 
     /**

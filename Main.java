@@ -16,23 +16,15 @@ public class Main {
 
         // Arguments :
         // - fastMode : si true, pas d'affichage graphique et les robots ne font pas de pause entre les étapes
-        // - seed : graine pour la génération aléatoire (obstacles, positions, etc.)
-        //
+        // - testMode : si true, exécute une série de tests d'efficacité pour différentes configurations de robots et d'obstacles
         boolean fastMode = false;
         boolean testMode = false;
-        int seed = 0; // par défaut, graine aléatoire
         for (String arg : args) {
             if (arg.equalsIgnoreCase("fastMode=true")) {
                 fastMode = true;
             } else if (arg.equalsIgnoreCase("testMode=true")) {
                 testMode = true;
                 fastMode = true; // forcer le mode rapide en test
-            } else if (arg.startsWith("seed=")) {
-                try {
-                    seed = Integer.parseInt(arg.substring(5));
-                } catch (NumberFormatException e) {
-                    System.err.println("Invalid seed value, using current time as seed.");
-                }
             }
         }
         if (testMode) {
@@ -86,7 +78,6 @@ public class Main {
                             if (sp.colorexit == null) sp.colorexit = java.awt.Color.GREEN;
                             if (sp.colorrobot == null) sp.colorrobot = java.awt.Color.RED;
                             if (sp.colorother == null) sp.colorother = java.awt.Color.MAGENTA;
-
                             MySimFactory sim = new MySimFactory(sp);
                             sim.setNbPackages(sp.nbrobot * 3);
                             sim.numberOfWorkers = sp.nbobstacle / 2;
@@ -103,10 +94,6 @@ public class Main {
                             sim.createWorker();
                             sim.createRobot();
                             sim.loadRechargeZones(ifileEnv);
-
-                            // /!\ IMPORTANT : Nettoyer l'état global avant chaque run
-                            // si vous avez conservé des champs 'static' dans MyRobot !
-                            // MyRobot.resetGlobalState();
 
                             long start = System.currentTimeMillis();
                             sim.schedule();
@@ -149,12 +136,15 @@ public class Main {
                                 robotsRange[i], obstaclesRange[j], results[i][j][0], results[i][j][1], results[i][j][2], results[i][j][3]);
                     }
                 }
-                System.out.println("\nFichier CSV généré : resultats_tests.csv");
+                System.out.println("\nFichier CSV : resultats_tests.csv");
             } catch (IOException e) {
                 System.err.println("Erreur lors de l'écriture du CSV : " + e.getMessage());
             }
             return;
         }
+
+        // Mode normal
+
         IniFile ifile    = new IniFile("parameters/configuration.ini");
         IniFile ifileEnv = new IniFile("parameters/environment.ini");
 

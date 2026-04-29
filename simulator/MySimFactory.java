@@ -55,8 +55,6 @@ public class MySimFactory extends SimFactory {
     private static final String RED    = "\033[31m";
     private static final String CYAN   = "\033[36m";
     private static final String BLUE   = "\033[34m";
-    /** Effacement écran + curseur en haut à gauche. */
-    private static final String CLEAR  = "\033[H\033[2J";
 
     public MySimFactory(SimProperties sp) {
         super(sp);

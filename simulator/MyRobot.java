@@ -59,7 +59,7 @@ public class MyRobot extends ColorInteractionRobot {
     public static final int MAX_CHARGE       = 100;
     private  static final int CHARGE_COST    = 1;   // consommation par pas de déplacement
     private  static final int CHARGE_GAIN    = 5;   // recharge par tick à la station
-    private  static final int SAFETY_MARGIN = 15; // seuil d'urgence
+    private  static final int SAFETY_MARGIN = 20;   // seuil d'urgence
 
     // ------------------------------------------------------------------ //
     //  Connaissances (zones)
@@ -67,7 +67,7 @@ public class MyRobot extends ColorInteractionRobot {
     protected Map<String, ColorStartZone>   startZonesMap;
     protected Map<String, ColorTransitZone> transitZonesMap;
     protected Map<Integer, int[]>           goalPositions;   // id → [x,y]
-    protected List<int[]>                   rechargePositions;
+    protected List<int[]>                   rechargePositions; // [[x,y], ...]
 
     // ------------------------------------------------------------------ //
     //  Réservations (Robot_ID → Zone_ID)
@@ -94,7 +94,6 @@ public class MyRobot extends ColorInteractionRobot {
     // ------------------------------------------------------------------ //
     private int mySourcePriority  = Integer.MIN_VALUE;
     private int myDepositPriority = Integer.MIN_VALUE;
-    private int myChargePriority  = Integer.MIN_VALUE;
 
 
     /** Compteur de cycles consécutifs sans mouvement (anti-blocage). */
@@ -347,29 +346,6 @@ public class MyRobot extends ColorInteractionRobot {
         return false;
     }
 
-    /**
-     * Vérifie si ce robot est celui qui a la plus haute priorité (batterie la plus faible)
-     * parmi tous ceux qui ciblent la MÊME station de recharge.
-     */
-    private boolean hasChargePriority() {
-        String myTarget = destX + "," + destY;
-
-        for (Map.Entry<Integer, String> entry : robotToCharge.entrySet()) {
-            int otherId = entry.getKey();
-            String otherTarget = entry.getValue();
-
-            // Si un autre robot cible la même station...
-            if (otherId != getId() && otherTarget.equals(myTarget)) {
-                int otherPri = robotChargePriority.getOrDefault(otherId, 0);
-
-                // ... et qu'il est plus urgent que nous (ou égal mais ID inférieur)
-                if (otherPri > myChargePriority || (otherPri == myChargePriority && otherId < getId())) {
-                    return false; // On n'a pas la priorité, on doit attendre
-                }
-            }
-        }
-        return true; // La voie est libre pour nous !
-    }
 
     // ================================================================== //
     //  Déplacement
@@ -571,7 +547,6 @@ public class MyRobot extends ColorInteractionRobot {
         targetDestTransitId = null;
         mySourcePriority    = Integer.MIN_VALUE;
         myDepositPriority   = Integer.MIN_VALUE;
-        myChargePriority    = Integer.MIN_VALUE;
         cachedPath          = null;
         positionHistory.clear();
         oscillationWaitCounter = 0;
@@ -890,15 +865,14 @@ public class MyRobot extends ColorInteractionRobot {
                         robotToTransitDeposit.put(getId(), targetDestTransitId);
                         broadcast("RESERVE_DEPOSIT:" + targetDestTransitId + ":" + getId() + ":" + chargeLevel + ":" + distToAlt);
 
-                        etat = Etat.TRANSPORT_TO_GOAL;
                     } else {
                         // Plus aucune place en transit, on prend l'initiative de livrer directement à la sortie !
                         targetDestIsTransit = false;
                         int gid = (carriedPackage.getDestinationGoalId() > 0) ? carriedPackage.getDestinationGoalId() : targetGoalId;
                         int[] gp = goalPositions.getOrDefault(gid, goalPositions.values().iterator().next());
                         destX = gp[0]; destY = gp[1];
-                        etat = Etat.TRANSPORT_TO_GOAL;
                     }
+                    etat = Etat.TRANSPORT_TO_GOAL;
                 } else {
                     // C'était une livraison directe à la zone de sortie (Z1 ou Z2)
                     int gid = (carriedPackage.getDestinationGoalId() > 0) ? carriedPackage.getDestinationGoalId() : targetGoalId;
@@ -922,11 +896,13 @@ public class MyRobot extends ColorInteractionRobot {
     // ================================================================== //
     @Override
     public void step() {
+
+
         readMessages();
 
         // Consommation de batterie lors des déplacements
         // Consommation de batterie
-        boolean isWaitingForCharge = (etat == Etat.MOVING_TO_CHARGE && !hasChargePriority());
+        boolean isWaitingForCharge = (etat == Etat.MOVING_TO_CHARGE);
         boolean isOnRechargeZone = false;
         for (int[] r : rechargePositions) {
             if (r[0] == getX() && r[1] == getY()) {
@@ -956,7 +932,7 @@ public class MyRobot extends ColorInteractionRobot {
         if (chargeLevel <= dynamicEmergencyThreshold
                 && etat != Etat.CHARGING
                 && etat != Etat.MOVING_TO_CHARGE
-                && !finishDeliveryFirst) { // <--- AJOUT DE LA CONDITION ICI
+                && !finishDeliveryFirst) {
 
             // 1. GESTION DU COLIS (On le garde dans les mains !)
             if (carriedPackage != null && targetDestIsTransit && targetDestTransitId != null) {
@@ -1140,14 +1116,6 @@ public class MyRobot extends ColorInteractionRobot {
         return getName() + " [" + etat + "] bat=" + chargeLevel
                 + " pos=(" + getX() + "," + getY() + ")"
                 + (carriedPackage != null ? " porte=1" : "");
-    }
-
-    private void updateReservationIfBetter(String zoneId, int id, int pri, Map<String, Integer> resMap, Map<String, Integer> priMap) {
-        int currentPri = priMap.getOrDefault(zoneId, Integer.MIN_VALUE);
-        if (pri > currentPri || (pri == currentPri && id < resMap.getOrDefault(zoneId, Integer.MAX_VALUE))) {
-            resMap.put(zoneId, id);
-            priMap.put(zoneId, pri);
-        }
     }
 
     /** Nombre de cycles passés en IDLE */
